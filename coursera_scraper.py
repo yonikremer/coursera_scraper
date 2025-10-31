@@ -215,6 +215,7 @@ class CourseraDownloader:
             ydl_opts = {
                 'outtmpl': str(filepath),
                 'cookiefile': str(cookies_file),
+                'format': 'best[height<=720]',  # Download 720p or lower quality
                 'quiet': True,
                 'no_warnings': True,
             }
@@ -561,21 +562,30 @@ class CourseraDownloader:
                   video.find_elements(By.TAG_NAME, 'source')]
             ]
 
+            # Filter sources to get 720p if available
+            # Look for sources with quality indicators in URL
+            sources_720p = [s for s in sources if s and '720' in s]
+            if sources_720p:
+                sources = sources_720p
+            else:
+                # Fallback to all available sources
+                sources = [s for s in sources if s]
+
             for video_src in sources:
                 if video_src:
                     print(f"  Video source: {video_src[:80]}...")
                     video_file = course_dir / f"{item_counter:03d}_{title}_{idx}.mp4"
 
                     if not video_file.exists():
-                        print(f"  ⬇ Downloading video...")
+                        print(f"  ⬇ Downloading video (720p preferred)...")
                         try:
                             if self.download_file(video_src, video_file):
                                 materials_downloaded += 1
                                 downloaded_something = True
                                 print(f"  ✓ Video saved: {video_file.name}")
                             else:
-                                # Try with yt-dlp as fallback
-                                print(f"  Trying alternative download method...")
+                                # Try with yt-dlp as fallback (with 720p format specification)
+                                print(f"  Trying alternative download method (720p)...")
                                 if self.download_video(item_url, video_file):
                                     materials_downloaded += 1
                                     downloaded_something = True
