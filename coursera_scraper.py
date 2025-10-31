@@ -445,7 +445,7 @@ class CourseraDownloader:
                         except Exception as e:
                             print(f"  ⚠ Error processing PDFs: {e}")
 
-                        # 3. Save reading content as HTML
+                        # 3. Save reading content as HTML and download attachments
                         if item_type == "reading":
                             try:
                                 content = None
@@ -463,6 +463,70 @@ class CourseraDownloader:
                                             break
                                     except:
                                         continue
+
+                                # Download attachments from the reading
+                                try:
+                                    # Find attachment links (DOCX, PDF, etc.)
+                                    attachment_links = self.driver.find_elements(By.XPATH,
+                                        "//a[@data-e2e='asset-download-link'] | " +
+                                        "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'cloudfront.net')]")
+
+                                    for attach_link in attachment_links:
+                                        try:
+                                            attach_url = attach_link.get_attribute('href')
+                                            if not attach_url or attach_url in downloaded_files:
+                                                continue
+
+                                            downloaded_files.add(attach_url)
+
+                                            # Try to get filename from data-name attribute or link text
+                                            attach_name = None
+                                            try:
+                                                # Look for data-name attribute in child elements
+                                                asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-name]")
+                                                attach_name = asset_elem.get_attribute('data-name')
+                                            except:
+                                                pass
+
+                                            if not attach_name:
+                                                # Try to get from data-e2e="asset-name" element
+                                                try:
+                                                    name_elem = attach_link.find_element(By.XPATH, ".//div[@data-e2e='asset-name']")
+                                                    attach_name = name_elem.text.strip()
+                                                except:
+                                                    pass
+
+                                            if not attach_name:
+                                                # Fallback to URL filename
+                                                attach_name = attach_url.split('/')[-1].split('?')[0]
+
+                                            # Get file extension from data-extension or URL
+                                            extension = None
+                                            try:
+                                                asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-extension]")
+                                                extension = asset_elem.get_attribute('data-extension')
+                                            except:
+                                                # Try to extract from URL
+                                                if '.' in attach_url.split('/')[-1].split('?')[0]:
+                                                    extension = attach_url.split('/')[-1].split('?')[0].split('.')[-1]
+
+                                            # Ensure filename has extension
+                                            attach_name = self.sanitize_filename(attach_name)
+                                            if extension and not attach_name.endswith(f'.{extension}'):
+                                                attach_name = f"{attach_name}.{extension}"
+
+                                            attach_file = course_dir / f"{item_counter:03d}_attachment_{attach_name}"
+
+                                            print(f"  ⬇ Downloading attachment: {attach_name}")
+                                            if self.download_file(attach_url, attach_file):
+                                                materials_downloaded += 1
+                                                downloaded_something = True
+                                                print(f"  ✓ Attachment saved: {attach_name}")
+                                        except Exception as e:
+                                            print(f"  ⚠ Error downloading attachment: {e}")
+                                            continue
+                                except Exception as e:
+                                    print(f"  ⚠ Error processing attachments: {e}")
 
                                 if content:
                                     html_file = course_dir / f"{item_counter:03d}_{title}.html"
