@@ -825,7 +825,6 @@ class CourseraDownloader:
                 if old_lab_dir.exists() and old_lab_dir.is_dir():
                     print(f"  📦 Moving existing lab directory to module directory")
                     try:
-                        import shutil
                         module_dir.mkdir(exist_ok=True)
                         shutil.move(str(old_lab_dir), str(lab_dir))
                         print(f"  ✓ Moved lab directory")
@@ -843,7 +842,6 @@ class CourseraDownloader:
                                     print(f"  📦 Moving and renaming lab directory: {old_dir.name} → {lab_dir_name}")
                                     try:
                                         module_dir.mkdir(exist_ok=True)
-                                        import shutil
                                         shutil.move(str(old_dir), str(lab_dir))
                                         print(f"  ✓ Renamed and moved lab directory")
                                         break
