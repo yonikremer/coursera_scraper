@@ -111,6 +111,40 @@ class CourseraDownloader:
         """Remove invalid characters from filename."""
         return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
+    def _get_or_move_file(self, course_dir: Path, module_dir: Path, filename: str) -> Path:
+        """
+        Check if file exists in course directory (from old runs), move it to module directory.
+        If not found, return the module directory path for saving.
+
+        Args:
+            course_dir: The course root directory
+            module_dir: The module subdirectory
+            filename: The filename to check/save
+
+        Returns:
+            Path object for the file in module directory
+        """
+        module_file = module_dir / filename
+        course_file = course_dir / filename
+
+        # If file already exists in module directory, return it
+        if module_file.exists():
+            return module_file
+
+        # Check if file exists in course directory (from old flat structure)
+        if course_file.exists():
+            print(f"  📦 Moving existing file to module directory: {filename}")
+            try:
+                # Ensure module directory exists
+                module_dir.mkdir(exist_ok=True)
+                # Move file from course root to module directory
+                course_file.rename(module_file)
+                print(f"  ✓ Moved: {filename}")
+            except Exception as e:
+                print(f"  ⚠ Error moving file: {e}")
+
+        return module_file
+
     def download_file(self, url: str, filepath: Path) -> bool:
         """Download a file from URL."""
         try:
@@ -224,7 +258,8 @@ class CourseraDownloader:
 
         return title
 
-    def _process_video_item(self, module_dir: Path, item_counter: int, title: str, item_url: str) -> Tuple[bool, int]:
+    def _process_video_item(self, course_dir: Path, module_dir: Path, item_counter: int,
+                           title: str, item_url: str) -> Tuple[bool, int]:
         """Process and download video items."""
         downloaded_count = 0
         downloaded_something = False
@@ -248,7 +283,8 @@ class CourseraDownloader:
                 for video_src in sources:
                     if video_src:
                         print(f"  Video source: {video_src[:80]}...")
-                        video_file = module_dir / f"{item_counter:03d}_{title}_{idx}.mp4"
+                        filename = f"{item_counter:03d}_{title}_{idx}.mp4"
+                        video_file = self._get_or_move_file(course_dir, module_dir, filename)
 
                         if not video_file.exists():
                             print(f"  ⬇ Downloading video (720p preferred)...")
@@ -278,7 +314,8 @@ class CourseraDownloader:
                 if href:
                     href = href.replace("full/540p", "full/720p")
                     print(f"  Found download link: {href[:80]}...")
-                    video_file = module_dir / f"{item_counter:03d}_{title}.mp4"
+                    filename = f"{item_counter:03d}_{title}.mp4"
+                    video_file = self._get_or_move_file(course_dir, module_dir, filename)
                     if not video_file.exists():
                         if self.download_file(href, video_file):
                             downloaded_count += 1
@@ -290,7 +327,8 @@ class CourseraDownloader:
 
         return downloaded_something, downloaded_count
 
-    def _process_pdf_items(self, module_dir: Path, item_counter: int, downloaded_files: Set[str]) -> Tuple[bool, int]:
+    def _process_pdf_items(self, course_dir: Path, module_dir: Path, item_counter: int,
+                          downloaded_files: Set[str]) -> Tuple[bool, int]:
         """Process and download PDF items."""
         downloaded_count = 0
         downloaded_something = False
@@ -316,24 +354,27 @@ class CourseraDownloader:
                 if href and href not in downloaded_files:
                     downloaded_files.add(href)
                     link_text = link.text.strip() or "document"
-                    filename = self.sanitize_filename(link_text)
-                    if not filename.endswith('.pdf'):
-                        filename += '.pdf'
+                    base_filename = self.sanitize_filename(link_text)
+                    if not base_filename.endswith('.pdf'):
+                        base_filename += '.pdf'
 
-                    pdf_file = module_dir / f"{item_counter:03d}_{filename}"
-                    print(f"  ⬇ Downloading PDF: {filename}")
-                    if self.download_file(href, pdf_file):
-                        downloaded_count += 1
-                        downloaded_something = True
-                        print(f"  ✓ PDF saved: {filename}")
+                    filename = f"{item_counter:03d}_{base_filename}"
+                    pdf_file = self._get_or_move_file(course_dir, module_dir, filename)
+
+                    if not pdf_file.exists():
+                        print(f"  ⬇ Downloading PDF: {base_filename}")
+                        if self.download_file(href, pdf_file):
+                            downloaded_count += 1
+                            downloaded_something = True
+                            print(f"  ✓ PDF saved: {base_filename}")
 
         except Exception as e:
             print(f"  ⚠ Error processing PDFs: {e}")
 
         return downloaded_something, downloaded_count
 
-    def _process_reading_item(self, module_dir: Path, item_counter: int, title: str,
-                             downloaded_files: Set[str]) -> Tuple[bool, int]:
+    def _process_reading_item(self, course_dir: Path, module_dir: Path, item_counter: int,
+                             title: str, downloaded_files: Set[str]) -> Tuple[bool, int]:
         """Process and save reading content and attachments."""
         downloaded_count = 0
         downloaded_something = False
@@ -352,11 +393,12 @@ class CourseraDownloader:
                     continue
 
             # Download attachments
-            downloaded_count += self._download_attachments(module_dir, item_counter, downloaded_files)
+            downloaded_count += self._download_attachments(course_dir, module_dir, item_counter, downloaded_files)
 
             # Save HTML content
             if content:
-                html_file = module_dir / f"{item_counter:03d}_{title}.html"
+                filename = f"{item_counter:03d}_{title}.html"
+                html_file = self._get_or_move_file(course_dir, module_dir, filename)
                 with open(html_file, 'w', encoding='utf-8') as f:
                     f.write(f"""<!DOCTYPE html>
 <html>
@@ -385,7 +427,8 @@ class CourseraDownloader:
 
         return downloaded_something, downloaded_count
 
-    def _download_attachments(self, module_dir: Path, item_counter: int, downloaded_files: Set[str]) -> int:
+    def _download_attachments(self, course_dir: Path, module_dir: Path, item_counter: int,
+                             downloaded_files: Set[str]) -> int:
         """Download attachments from reading items."""
         downloaded_count = 0
 
@@ -433,12 +476,14 @@ class CourseraDownloader:
                     if extension and not attach_name.endswith(f'.{extension}'):
                         attach_name = f"{attach_name}.{extension}"
 
-                    attach_file = module_dir / f"{item_counter:03d}_attachment_{attach_name}"
+                    filename = f"{item_counter:03d}_attachment_{attach_name}"
+                    attach_file = self._get_or_move_file(course_dir, module_dir, filename)
 
-                    print(f"  ⬇ Downloading attachment: {attach_name}")
-                    if self.download_file(attach_url, attach_file):
-                        downloaded_count += 1
-                        print(f"  ✓ Attachment saved: {attach_name}")
+                    if not attach_file.exists():
+                        print(f"  ⬇ Downloading attachment: {attach_name}")
+                        if self.download_file(attach_url, attach_file):
+                            downloaded_count += 1
+                            print(f"  ✓ Attachment saved: {attach_name}")
 
                 except Exception as e:
                     print(f"  ⚠ Error downloading attachment: {e}")
@@ -449,8 +494,8 @@ class CourseraDownloader:
 
         return downloaded_count
 
-    def _process_assignment_or_quiz(self, module_dir: Path, item_counter: int, title: str,
-                                    item_type: str) -> Tuple[bool, int]:
+    def _process_assignment_or_quiz(self, course_dir: Path, module_dir: Path, item_counter: int,
+                                    title: str, item_type: str) -> Tuple[bool, int]:
         """Process and save assignment or quiz content."""
         downloaded_count = 0
         downloaded_something = False
@@ -502,7 +547,8 @@ class CourseraDownloader:
                     continue
 
             if assignment_content:
-                assignment_file = module_dir / f"{item_counter:03d}_{title}_{item_type}.html"
+                filename = f"{item_counter:03d}_{title}_{item_type}.html"
+                assignment_file = self._get_or_move_file(course_dir, module_dir, filename)
                 with open(assignment_file, 'w', encoding='utf-8') as f:
                     f.write(f"""<!DOCTYPE html>
 <html>
@@ -545,7 +591,8 @@ class CourseraDownloader:
 
         return downloaded_something, downloaded_count
 
-    def _process_lab_item(self, module_dir: Path, item_counter: int, title: str) -> Tuple[bool, int]:
+    def _process_lab_item(self, course_dir: Path, module_dir: Path, item_counter: int,
+                         title: str) -> Tuple[bool, int]:
         """Process and download Jupyter lab notebooks and data files."""
         downloaded_count = 0
         downloaded_something = False
@@ -584,8 +631,22 @@ class CourseraDownloader:
                 print(f"  Current URL: {self.driver.current_url}")
                 return downloaded_something, downloaded_count
 
+            # Check if lab directory exists in old location (course root)
+            lab_dirname = f"{item_counter:03d}_{title}_lab"
+            old_lab_dir = course_dir / lab_dirname
+            lab_dir = module_dir / lab_dirname
+
+            # Move old lab directory if it exists
+            if old_lab_dir.exists() and old_lab_dir.is_dir():
+                print(f"  📦 Moving existing lab directory to module directory")
+                try:
+                    import shutil
+                    shutil.move(str(old_lab_dir), str(lab_dir))
+                    print(f"  ✓ Moved lab directory")
+                except Exception as e:
+                    print(f"  ⚠ Error moving lab directory: {e}")
+
             # Create lab directory
-            lab_dir = module_dir / f"{item_counter:03d}_{title}_lab"
             lab_dir.mkdir(exist_ok=True)
 
             # Download notebook and data files
@@ -694,8 +755,8 @@ class CourseraDownloader:
 
         return data_files
 
-    def _process_course_item(self, item_url: str, module_dir: Path, item_counter: int,
-                           downloaded_files: Set[str]) -> int:
+    def _process_course_item(self, item_url: str, course_dir: Path, module_dir: Path,
+                           item_counter: int, downloaded_files: Set[str]) -> int:
         """Process a single course item and download its materials."""
         materials_downloaded = 0
 
@@ -722,23 +783,23 @@ class CourseraDownloader:
 
             # Process based on item type
             if item_type == "video":
-                downloaded_something, count = self._process_video_item(module_dir, item_counter, title, item_url)
+                downloaded_something, count = self._process_video_item(course_dir, module_dir, item_counter, title, item_url)
                 materials_downloaded += count
 
             if item_type == "reading":
-                downloaded_something, count = self._process_reading_item(module_dir, item_counter, title, downloaded_files)
+                downloaded_something, count = self._process_reading_item(course_dir, module_dir, item_counter, title, downloaded_files)
                 materials_downloaded += count
 
             if item_type in ["quiz", "assignment"]:
-                downloaded_something, count = self._process_assignment_or_quiz(module_dir, item_counter, title, item_type)
+                downloaded_something, count = self._process_assignment_or_quiz(course_dir, module_dir, item_counter, title, item_type)
                 materials_downloaded += count
 
             if item_type == "lab":
-                downloaded_something, count = self._process_lab_item(module_dir, item_counter, title)
+                downloaded_something, count = self._process_lab_item(course_dir, module_dir, item_counter, title)
                 materials_downloaded += count
 
             # Process PDFs (for all item types)
-            _, pdf_count = self._process_pdf_items(module_dir, item_counter, downloaded_files)
+            _, pdf_count = self._process_pdf_items(course_dir, module_dir, item_counter, downloaded_files)
             materials_downloaded += pdf_count
 
             if not downloaded_something and item_type not in ["quiz", "assignment", "lab"]:
@@ -806,7 +867,7 @@ class CourseraDownloader:
             items_processed += 1
 
             item_counter = len(visited_urls)
-            materials_count = self._process_course_item(item_url, module_dir, item_counter, downloaded_files)
+            materials_count = self._process_course_item(item_url, course_dir, module_dir, item_counter, downloaded_files)
             materials_downloaded += materials_count
 
         return items_processed, materials_downloaded
