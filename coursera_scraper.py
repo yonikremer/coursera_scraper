@@ -395,6 +395,7 @@ class CourseraDownloader:
                                 for btn in download_btns:
                                     href = btn.get_attribute('href')
                                     if href:
+                                        href = self.sanitize_filename(href).replace("full/540p", "full/720p")
                                         print(f"  Found download link: {href[:80]}...")
                                         video_file = course_dir / f"{item_counter:03d}_{title}.mp4"
                                         if not video_file.exists():
@@ -674,9 +675,8 @@ class CourseraDownloader:
                 "https://www.coursera.org/learn/go-beyond-the-numbers-translate-data-into-insight",
                 "https://www.coursera.org/learn/the-power-of-statistics",
                 "https://www.coursera.org/learn/regression-analysis-simplify-complex-data-relationships",
-                "https://www.coursera.org/learn/the-nuts- and -bolts-of-machine-learning",
+                "https://www.coursera.org/learn/the-nuts-and-bolts-of-machine-learning",
                 "https://www.coursera.org/learn/google-advanced-data-analytics-capstone",
-                "https://www.coursera.org/learn/accelerate-your-job-search-with-ai"
             ]
 
             total_materials = 0
