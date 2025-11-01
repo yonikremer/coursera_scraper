@@ -3,13 +3,13 @@
 Coursera Material Downloader
 Downloads all course materials from enrolled Coursera courses/professional certificates.
 """
-
+import os
 import re
 import time
 import argparse
 import urllib.parse
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Set, Tuple, Optional
 
 import requests
 from selenium import webdriver
@@ -19,6 +19,7 @@ from selenium.webdriver.support import expected_conditions
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import yt_dlp
+from yt_dlp.utils import sanitize_filename
 
 
 class CourseraDownloader:
@@ -114,6 +115,7 @@ class CourseraDownloader:
         sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)
         # Replace spaces with underscores
         sanitized = sanitized.replace(' ', '_')
+        sanitized = sanitized.replace('-', '_')
         # Convert to lowercase
         sanitized = sanitized.lower()
         # Remove multiple consecutive underscores
@@ -124,7 +126,7 @@ class CourseraDownloader:
     def _get_or_move_file(course_dir: Path, module_dir: Path, filename: str) -> Path:
         """
         Check if a file exists in the course directory (from old runs), move it to the module directory.
-        Also handles renaming files from old naming convention (spaces, mixed case) to new (lowercase, underscores).
+        Also handles renaming files from the old naming convention (spaces, mixed case) to new (lowercase, underscores).
         If not found, return the module directory path for saving.
 
         Args:
@@ -145,7 +147,7 @@ class CourseraDownloader:
         if module_file.exists():
             return module_file
 
-        # Check if a file exists in course directory with the new naming (from old flat structure)
+        # Check if a file exists in the course directory with the new naming
         if course_file.exists():
             print(f"  📦 Moving existing file to module directory: {filename}")
             try:
@@ -156,35 +158,12 @@ class CourseraDownloader:
             except Exception as e:
                 print(f"  ⚠ Error moving file: {e}")
 
-        # Try to find file with old naming convention (case-insensitive, might have spaces)
-        # Extract the counter prefix (e.g., "001_") and extension
-        parts = filename.split('_', 1)
-        if len(parts) >= 2:
-            counter_prefix = parts[0]  # e.g., "001"
-            rest_of_filename = parts[1]  # e.g., "title.mp4"
-
-            # Look for files with the same counter in both directories
-            for directory in [module_dir, course_dir]:
-                if directory.exists():
-                    # Find files that start with the counter
-                    pattern = f"{counter_prefix}_*"
-                    for old_file in directory.glob(pattern):
-                        # Check if this is a match (case-insensitive comparison)
-                        if old_file.name.lower() == filename.lower() and old_file.name != filename:
-                            # Found file with old naming - move and rename it
-                            print(f"  📦 Moving and renaming: {old_file.name} → {filename}")
-                            try:
-                                old_file.rename(module_file)
-                                print(f"  ✓ Renamed and moved: {filename}")
-                                return module_file
-                            except Exception as e:
-                                print(f"  ⚠ Error renaming file: {e}")
 
         return module_file
 
     @staticmethod
-    def _check_item_exists(course_dir: Path, module_dir: Path, item_counter: int,
-                          item_type: str) -> bool:
+    def _find_items(course_dir: Path, module_dir: Path, item_counter: int,
+                    item_type: str) -> list[Path]:
         """
         Check if an item's materials already exist (either in module or course directory).
         This allows skipping navigation to items that have already been downloaded.
@@ -206,26 +185,26 @@ class CourseraDownloader:
             files_in_module = list(module_dir.glob(f"{prefix}*"))
             if files_in_module:
                 # Found files with this counter in the module directory
-                return True
+                return files_in_module
 
         # Check course root directory for old structure
         files_in_course = list(course_dir.glob(f"{prefix}*"))
         if files_in_course:
             # Found files with this counter in course root
-            return True
+            return files_in_course
 
         # For labs, check if the lab directory exists
         if item_type == "lab":
             # Lab directories have a pattern: NNN_title_lab/
             lab_dirs_module = list(module_dir.glob(f"{prefix}*_lab"))
             if lab_dirs_module and any(d.is_dir() for d in lab_dirs_module):
-                return True
+                return files_in_course
 
             lab_dirs_course = list(course_dir.glob(f"{prefix}*_lab"))
             if lab_dirs_course and any(d.is_dir() for d in lab_dirs_course):
-                return True
+                return lab_dirs_course
 
-        return False
+        return []
 
     def download_file(self, url: str, filepath: Path) -> bool:
         """Download a file from URL."""
@@ -924,11 +903,19 @@ class CourseraDownloader:
             # Determine item type from URL (before navigating)
             item_type = self._determine_item_type(item_url)
 
+            existing_items = self._find_items(course_dir, module_dir, item_counter, item_type)
+
             # Check if an item already exists before navigating
-            if self._check_item_exists(course_dir, module_dir, item_counter, item_type):
+            if len(existing_items) > 0:
                 print(f"\n  [{item_counter}] ✓ Item materials already exist, skipping navigation")
                 # Still need to move files if they're in the old location,
-                # But we don't need to navigate to the page
+                print(f"found existing items: {existing_items}")
+                for item in existing_items:
+                    # move the file to the module directory and sanitize the file name
+                    print(f"moving item: {item}")
+                    item_file = self._get_or_move_file(course_dir, module_dir, item.name)
+                    downloaded_files.add(item_file)
+                    materials_downloaded += 1
                 return 0  # Return 0 since we're not downloading anything new
 
             print(f"\n  [{item_counter}] Navigating to item...")
@@ -1020,7 +1007,7 @@ class CourseraDownloader:
             raise Exception(f"No items found in module {module_num}. Page source saved for debugging.")
 
         # Create module directory
-        module_dir = course_dir / f"Module_{module_num}"
+        module_dir = course_dir / f"module_{module_num}"
         module_dir.mkdir(exist_ok=True)
 
         # Process each item
@@ -1055,26 +1042,18 @@ class CourseraDownloader:
         visited_urls = set()
         downloaded_files = set()
 
-        try:
-            print("\nNavigating to course...")
-            self.driver.get(course_url)
-            time.sleep(5)
+        print("\nNavigating to course...")
+        self.driver.get(course_url)
+        time.sleep(5)
 
-            # Iterate through modules
-            for module_num in range(1, 21):
-                items_processed, materials_downloaded = self._process_module(
-                    course_url, course_slug, module_num, course_dir, visited_urls, downloaded_files
-                )
-
-                total_materials += materials_downloaded
-
-                if items_processed == 0:
-                    break
-
-        except Exception as e:
-            print(f"\n⚠ Error navigating course: {e}")
-            import traceback
-            traceback.print_exc()
+        # Iterate through modules
+        for module_num in range(1, 21):
+            items_processed, materials_downloaded = self._process_module(
+                course_url, course_slug, module_num, course_dir, visited_urls, downloaded_files
+            )
+            total_materials += materials_downloaded
+            if items_processed == 0:
+                break
 
         print(f"\n{'=' * 60}")
         print(f"✓ Course complete!")
