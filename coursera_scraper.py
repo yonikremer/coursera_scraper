@@ -744,22 +744,45 @@ class CourseraDownloader:
                     self.driver.switch_to.window(original_window)
                 return downloaded_something, downloaded_count
 
-            # Check if lab directory exists in old location (course root)
+            # Check if lab directory exists in old location (course root) or with old naming
             lab_dir_name = f"{item_counter:03d}_{title}_lab"
             old_lab_dir = course_dir / lab_dir_name
             lab_dir = module_dir / lab_dir_name
 
-            # Move the old lab directory if it exists
-            if old_lab_dir.exists() and old_lab_dir.is_dir():
-                print(f"  📦 Moving existing lab directory to module directory")
-                try:
-                    import shutil
-                    shutil.move(str(old_lab_dir), str(lab_dir))
-                    print(f"  ✓ Moved lab directory")
-                except Exception as e:
-                    print(f"  ⚠ Error moving lab directory: {e}")
+            # Check if lab directory already exists with correct name
+            if lab_dir.exists() and lab_dir.is_dir():
+                print(f"  ℹ Lab directory already exists: {lab_dir_name}")
+            else:
+                # Try to find lab directory with new naming in course root (flat structure)
+                if old_lab_dir.exists() and old_lab_dir.is_dir():
+                    print(f"  📦 Moving existing lab directory to module directory")
+                    try:
+                        import shutil
+                        module_dir.mkdir(exist_ok=True)
+                        shutil.move(str(old_lab_dir), str(lab_dir))
+                        print(f"  ✓ Moved lab directory")
+                    except Exception as e:
+                        print(f"  ⚠ Error moving lab directory: {e}")
+                else:
+                    # Try to find lab directory with old naming convention (spaces, mixed case)
+                    counter_prefix = f"{item_counter:03d}_"
+                    for directory in [module_dir, course_dir]:
+                        if directory.exists():
+                            # Find directories that start with the counter and end with _lab
+                            for old_dir in directory.glob(f"{counter_prefix}*_lab"):
+                                if old_dir.is_dir() and old_dir.name.lower() == lab_dir_name.lower() and old_dir.name != lab_dir_name:
+                                    # Found lab directory with old naming - move and rename it
+                                    print(f"  📦 Moving and renaming lab directory: {old_dir.name} → {lab_dir_name}")
+                                    try:
+                                        module_dir.mkdir(exist_ok=True)
+                                        import shutil
+                                        shutil.move(str(old_dir), str(lab_dir))
+                                        print(f"  ✓ Renamed and moved lab directory")
+                                        break
+                                    except Exception as e:
+                                        print(f"  ⚠ Error renaming lab directory: {e}")
 
-            # Create a lab directory
+            # Create lab directory if it still doesn't exist
             lab_dir.mkdir(exist_ok=True)
 
             # Download notebook and data files
