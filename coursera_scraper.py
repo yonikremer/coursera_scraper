@@ -124,12 +124,13 @@ class CourseraDownloader:
     def _get_or_move_file(course_dir: Path, module_dir: Path, filename: str) -> Path:
         """
         Check if a file exists in the course directory (from old runs), move it to the module directory.
+        Also handles renaming files from old naming convention (spaces, mixed case) to new (lowercase, underscores).
         If not found, return the module directory path for saving.
 
         Args:
             course_dir: The course root directory
             module_dir: The module subdirectory
-            filename: The filename to check/save
+            filename: The filename to check/save (should be already sanitized)
 
         Returns:
             Path object for the file in the module directory
@@ -137,21 +138,47 @@ class CourseraDownloader:
         module_file = module_dir / filename
         course_file = course_dir / filename
 
-        # If a file already exists in the module directory, return it
+        # Ensure module directory exists
+        module_dir.mkdir(exist_ok=True)
+
+        # If a file already exists in the module directory with the correct name, return it
         if module_file.exists():
             return module_file
 
-        # Check if a file exists in course directory (from old flat structure)
+        # Check if a file exists in course directory with the new naming (from old flat structure)
         if course_file.exists():
             print(f"  📦 Moving existing file to module directory: {filename}")
             try:
-                # Ensure module directory exists
-                module_dir.mkdir(exist_ok=True)
                 # Move file from course root to the module directory
                 course_file.rename(module_file)
                 print(f"  ✓ Moved: {filename}")
+                return module_file
             except Exception as e:
                 print(f"  ⚠ Error moving file: {e}")
+
+        # Try to find file with old naming convention (case-insensitive, might have spaces)
+        # Extract the counter prefix (e.g., "001_") and extension
+        parts = filename.split('_', 1)
+        if len(parts) >= 2:
+            counter_prefix = parts[0]  # e.g., "001"
+            rest_of_filename = parts[1]  # e.g., "title.mp4"
+
+            # Look for files with the same counter in both directories
+            for directory in [module_dir, course_dir]:
+                if directory.exists():
+                    # Find files that start with the counter
+                    pattern = f"{counter_prefix}_*"
+                    for old_file in directory.glob(pattern):
+                        # Check if this is a match (case-insensitive comparison)
+                        if old_file.name.lower() == filename.lower() and old_file.name != filename:
+                            # Found file with old naming - move and rename it
+                            print(f"  📦 Moving and renaming: {old_file.name} → {filename}")
+                            try:
+                                old_file.rename(module_file)
+                                print(f"  ✓ Renamed and moved: {filename}")
+                                return module_file
+                            except Exception as e:
+                                print(f"  ⚠ Error renaming file: {e}")
 
         return module_file
 
