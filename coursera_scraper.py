@@ -147,6 +147,51 @@ class CourseraDownloader:
 
         return module_file
 
+    @staticmethod
+    def _check_item_exists(course_dir: Path, module_dir: Path, item_counter: int,
+                          item_type: str) -> bool:
+        """
+        Check if an item's materials already exist (either in module or course directory).
+        This allows skipping navigation to items that have already been downloaded.
+
+        Args:
+            course_dir: The course root directory
+            module_dir: The module subdirectory
+            item_counter: The item number
+            item_type: Type of item (video, reading, quiz, assignment, lab)
+
+        Returns:
+            True if the item likely exists, False otherwise
+        """
+        # Create the pattern for the item counter-prefix
+        prefix = f"{item_counter:03d}_"
+
+        # Check the module directory first
+        if module_dir.exists():
+            files_in_module = list(module_dir.glob(f"{prefix}*"))
+            if files_in_module:
+                # Found files with this counter in the module directory
+                return True
+
+        # Check course root directory for old structure
+        files_in_course = list(course_dir.glob(f"{prefix}*"))
+        if files_in_course:
+            # Found files with this counter in course root
+            return True
+
+        # For labs, check if the lab directory exists
+        if item_type == "lab":
+            # Lab directories have a pattern: NNN_title_lab/
+            lab_dirs_module = list(module_dir.glob(f"{prefix}*_lab"))
+            if lab_dirs_module and any(d.is_dir() for d in lab_dirs_module):
+                return True
+
+            lab_dirs_course = list(course_dir.glob(f"{prefix}*_lab"))
+            if lab_dirs_course and any(d.is_dir() for d in lab_dirs_course):
+                return True
+
+        return False
+
     def download_file(self, url: str, filepath: Path) -> bool:
         """Download a file from URL."""
         try:
@@ -764,7 +809,17 @@ class CourseraDownloader:
         materials_downloaded = 0
 
         try:
-            print(f"\n  Navigating to item...")
+            # Determine item type from URL (before navigating)
+            item_type = self._determine_item_type(item_url)
+
+            # Check if an item already exists before navigating
+            if self._check_item_exists(course_dir, module_dir, item_counter, item_type):
+                print(f"\n  [{item_counter}] ✓ Item materials already exist, skipping navigation")
+                # Still need to move files if they're in the old location,
+                # But we don't need to navigate to the page
+                return 0  # Return 0 since we're not downloading anything new
+
+            print(f"\n  [{item_counter}] Navigating to item...")
             self.driver.get(item_url)
 
             # Wait for content to load
