@@ -3,13 +3,15 @@
 Coursera Material Downloader
 Downloads all course materials from enrolled Coursera courses/professional certificates.
 """
-import os
 import re
 import time
 import argparse
-import urllib.parse
+import warnings
+import pickle
+import zipfile
+import shutil
 from pathlib import Path
-from typing import Set, Tuple, Optional
+from typing import Set, Tuple
 
 import requests
 from selenium import webdriver
@@ -19,7 +21,6 @@ from selenium.webdriver.support import expected_conditions
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import yt_dlp
-from yt_dlp.utils import sanitize_filename
 
 
 class CourseraDownloader:
@@ -851,76 +852,145 @@ class CourseraDownloader:
             # Create lab directory if it still doesn't exist
             lab_dir.mkdir(exist_ok=True)
 
-            # Download notebook and data files
+            # Download all lab files using the "Download all files" button
             current_url = self.driver.current_url
-            parsed_url = urllib.parse.urlparse(current_url)
-            params = urllib.parse.parse_qs(parsed_url.query)
-            notebook_path = params.get('path', [''])[0]
+            print(f"  Lab URL: {current_url}")
 
-            if notebook_path:
-                notebook_path = urllib.parse.unquote(notebook_path)
-                notebook_name = notebook_path.split('/')[-1]
-                print(f"  Notebook: {notebook_name}")
-
-                base_lab_url = current_url.split('/lab?')[0]
-
-                # Download notebook
-                notebook_download_url = f"{base_lab_url}/lab/api/contents/{notebook_path}"
-                print(f"  ⬇ Downloading notebook: {notebook_name}")
-
-                notebook_file = lab_dir / notebook_name
-
-                try:
-                    response = self.session.get(notebook_download_url, timeout=30)
-                    if response.status_code == 200:
-                        with open(notebook_file, 'wb') as f:
-                            f.write(response.content)
-                        print(f"  ✓ Notebook downloaded: {notebook_name}")
-                        downloaded_count += 1
-                        downloaded_something = True
-                    else:
-                        print(f"  ⚠ Could not download notebook (HTTP {response.status_code})")
-                except Exception as e:
-                    print(f"  ⚠ Error downloading notebook: {e}")
-
-                time.sleep(3)
-
-                # Find and download data files
-                data_files = self._find_lab_data_files()
-                print(f"  Found {len(data_files)} potential data file(s): {', '.join(sorted(data_files))}")
-
-                for data_filename in sorted(data_files):
+            try:
+                # Click "Lab files" button to show the file panel
+                print(f"  Looking for 'Lab files' button...")
+                lab_files_btn = None
+                for btn_selector in [
+                    "//button[contains(., 'Lab files')]",
+                    "//button[contains(@aria-label, 'Lab files')]",
+                    "//*[contains(text(), 'Lab files')]//ancestor::button",
+                ]:
                     try:
-                        data_download_url = f"{base_lab_url}/lab/api/contents/{data_filename}"
-                        print(f"  ⬇ Downloading data file: {data_filename}")
+                        lab_files_btn = self.driver.find_element(By.XPATH, btn_selector)
+                        if lab_files_btn.is_displayed():
+                            break
+                    except Exception:
+                        continue
 
-                        data_file = lab_dir / data_filename
+                if lab_files_btn and lab_files_btn.is_displayed():
+                    print(f"  ✓ Clicking 'Lab files' button...")
+                    lab_files_btn.click()
+                    time.sleep(2)
+                else:
+                    error_msg = f"❌ CRITICAL ERROR: 'Lab files' button not found!\n"
+                    error_msg += f"  Lab: {title}\n"
+                    error_msg += f"  URL: {current_url}\n"
+                    error_msg += f"  Cannot proceed with downloading lab files.\n"
+                    print(f"  {error_msg}")
+                    raise RuntimeError(error_msg)
 
-                        response = self.session.get(data_download_url, timeout=30)
-                        if response.status_code == 200:
-                            with open(data_file, 'wb') as f:
-                                f.write(response.content)
-                            print(f"  ✓ Data file downloaded: {data_filename}")
-                            downloaded_count += 1
-                            downloaded_something = True
-                        else:
-                            print(f"  ⚠ Could not download {data_filename} (HTTP {response.status_code})")
-                    except Exception as e:
-                        print(f"  ⚠ Error downloading {data_filename}: {e}")
+                # Click "Download all files" button
+                print(f"  Looking for 'Download all files' button...")
+                download_all_btn = None
+                for btn_selector in [
+                    "//button[contains(., 'Download all files')]",
+                    "//span[contains(text(), 'Download all files')]//ancestor::button",
+                    "//button[contains(@aria-label, 'Download all files')]",
+                ]:
+                    try:
+                        download_all_btn = self.driver.find_element(By.XPATH, btn_selector)
+                        if download_all_btn.is_displayed() and download_all_btn.is_enabled():
+                            break
+                    except Exception:
+                        continue
 
-                # Save lab info
-                lab_info_file = lab_dir / "lab_info.txt"
-                with open(lab_info_file, 'w', encoding='utf-8') as f:
-                    f.write(f"Lab: {title}\n")
-                    f.write(f"URL: {current_url}\n")
-                    f.write(f"Notebook: {notebook_name}\n")
-                    f.write(f"\nData files found:\n")
-                    for df in sorted(data_files):
-                        f.write(f"  - {df}\n")
-                    f.write(f"\nNote: Download attempts were made for all files above.\n")
-                    f.write(f"Check the lab directory for successfully downloaded files.\n")
+                if download_all_btn and download_all_btn.is_displayed() and download_all_btn.is_enabled():
+                    print(f"  ✓ Clicking 'Download all files' button...")
+                    download_all_btn.click()
+                    time.sleep(3)  # Give time for download to start
+                else:
+                    error_msg = f"❌ CRITICAL ERROR: 'Download all files' button not found!\n"
+                    error_msg += f"  Lab: {title}\n"
+                    error_msg += f"  URL: {current_url}\n"
+                    error_msg += f"  Cannot proceed with downloading lab files.\n"
+                    print(f"  {error_msg}")
+                    raise RuntimeError(error_msg)
 
-                print(f"  ✓ Lab processing complete")
+                # Wait for Files.zip to be downloaded
+                print(f"  ⏳ Waiting for Files.zip to download...")
+                zip_file = None
+                for attempt in range(30):  # Wait up to 30 seconds
+                    # Check in download directory
+                    potential_zip = self.download_dir / "Files.zip"
+                    if potential_zip.exists():
+                        zip_file = potential_zip
+                        break
+                    # Also check in user's Downloads folder
+                    downloads_folder = Path.home() / "Downloads" / "Files.zip"
+                    if downloads_folder.exists():
+                        zip_file = downloads_folder
+                        break
+                    time.sleep(1)
+
+                if zip_file and zip_file.exists():
+                    print(f"  ✓ Files.zip downloaded: {zip_file}")
+
+                    # Extract the zip file
+                    print(f"  📦 Extracting Files.zip...")
+                    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                        zip_ref.extractall(lab_dir)
+
+                    # The zip contains: Files/home/jovyan/work/
+                    # Move files from work directory to lab_dir root
+                    work_dir = lab_dir / "Files" / "home" / "jovyan" / "work"
+                    if work_dir.exists():
+                        print(f"  📁 Moving files from work directory to lab directory...")
+                        for item in work_dir.iterdir():
+                            dest = lab_dir / item.name
+                            if dest.exists():
+                                print(f"    ℹ Skipping existing: {item.name}")
+                            else:
+                                shutil.move(str(item), str(dest))
+                                print(f"    ✓ Moved: {item.name}")
+                                downloaded_count += 1
+                                downloaded_something = True
+
+                        # Clean up the Files directory structure
+                        files_dir = lab_dir / "Files"
+                        if files_dir.exists():
+                            shutil.rmtree(files_dir)
+                            print(f"  ✓ Cleaned up temporary Files directory")
+                    else:
+                        # Fallback: extract all files directly
+                        print(f"  ℹ Work directory not found, extracting all files from zip...")
+                        for item in lab_dir.iterdir():
+                            if item.is_file() and item.suffix in ['.ipynb', '.csv', '.txt', '.json', '.xlsx', '.py']:
+                                print(f"    ✓ Found: {item.name}")
+                                downloaded_count += 1
+                                downloaded_something = True
+
+                    # Delete the zip file
+                    zip_file.unlink()
+                    print(f"  ✓ Deleted Files.zip")
+
+                    # Save lab info
+                    lab_info_file = lab_dir / "lab_info.txt"
+                    with open(lab_info_file, 'w', encoding='utf-8') as f:
+                        f.write(f"Lab: {title}\n")
+                        f.write(f"URL: {current_url}\n")
+                        f.write(f"\nFiles downloaded from Lab files → Download all files\n")
+                        f.write(f"Check the lab directory for all downloaded files.\n")
+
+                    print(f"  ✓ Lab processing complete")
+                else:
+                    # CRITICAL: If lab files were not downloaded, raise an error and stop
+                    error_msg = f"❌ CRITICAL ERROR: Lab files were NOT downloaded!\n"
+                    error_msg += f"  Lab: {title}\n"
+                    error_msg += f"  URL: {current_url}\n"
+                    error_msg += f"  Expected: Files.zip in {self.download_dir}\n"
+                    error_msg += f"  This is a critical failure - the script must stop.\n"
+                    print(f"  {error_msg}")
+                    raise RuntimeError(error_msg)
+
+            except Exception as e:
+                print(f"  ⚠ Error downloading lab files: {e}")
+                import traceback
+                traceback.print_exc()
 
         except Exception as e:
             print(f"  ⚠ Error processing lab: {e}")
@@ -952,34 +1022,6 @@ class CourseraDownloader:
                         pass
 
         return downloaded_something, downloaded_count
-
-    def _find_lab_data_files(self) -> Set[str]:
-        """Find data files referenced in the lab notebook."""
-        page_source = self.driver.page_source
-
-        file_patterns = [
-            r'["\']([^"\']+\.csv)["\']',
-            r'["\']([^"\']+\.txt)["\']',
-            r'["\']([^"\']+\.json)["\']',
-            r'["\']([^"\']+\.xlsx?)["\']',
-            r'["\']([^"\']+\.parquet)["\']',
-            r'["\']([^"\']+\.pkl)["\']',
-            r'["\']([^"\']+\.dat)["\']',
-            r'["\']([^"\']+\.h5)["\']',
-            r'["\']([^"\']+\.hdf5?)["\']',
-        ]
-
-        data_files = set()
-        for pattern in file_patterns:
-            matches = re.findall(pattern, page_source)
-            for match in matches:
-                if not any(x in match for x in ['http://', 'https://', '/usr/', '/opt/',
-                                                '/home/', '/var/', '/tmp/']):
-                    filename = match.split('/')[-1]
-                    if filename and len(filename) < 100 and '.' in filename:
-                        data_files.add(filename)
-
-        return data_files
 
     def _process_course_item(self, item_url: str, course_dir: Path, module_dir: Path,
                            item_counter: int, downloaded_files: Set[str]) -> int:
