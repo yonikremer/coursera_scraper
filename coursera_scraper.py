@@ -32,6 +32,7 @@ class CourseraDownloader:
         self.session = requests.Session()
         self.driver = None
         self.headless = headless
+        self.cookies_file = self.download_dir / "coursera_cookies.pkl"
 
     def setup_driver(self):
         """Initialize Selenium WebDriver with Chrome."""
@@ -82,6 +83,9 @@ class CourseraDownloader:
             time.sleep(3)
             print("✓ Login successful!")
 
+            # Save cookies for future sessions
+            self._save_cookies()
+
             for cookie in self.driver.get_cookies():
                 self.session.cookies.set(cookie['name'], cookie['value'])
 
@@ -107,6 +111,89 @@ class CourseraDownloader:
             pass
 
         return False
+
+    def _save_cookies(self):
+        """Save browser cookies to a file for persistent login."""
+        try:
+            cookies = self.driver.get_cookies()
+            with open(self.cookies_file, 'wb') as f:
+                pickle.dump(cookies, f)
+            print(f"✓ Cookies saved to {self.cookies_file}")
+        except Exception as e:
+            print(f"⚠ Error saving cookies: {e}")
+
+    def _load_cookies(self) -> bool:
+        """Load cookies from file and add them to the browser session."""
+        if not self.cookies_file.exists():
+            print("ℹ No saved cookies found")
+            return False
+
+        try:
+            with open(self.cookies_file, 'rb') as f:
+                cookies = pickle.load(f)
+
+            # Navigate to Coursera first (required to set cookies for the domain)
+            self.driver.get("https://www.coursera.org")
+            time.sleep(2)
+
+            # Add each cookie to the browser
+            for cookie in cookies:
+                try:
+                    # Remove domain if it starts with a dot (compatibility fix)
+                    if 'domain' in cookie and cookie['domain'].startswith('.'):
+                        cookie['domain'] = cookie['domain'][1:]
+                    self.driver.add_cookie(cookie)
+                except Exception as e:
+                    # Skip cookies that can't be added
+                    pass
+
+            print("✓ Cookies loaded successfully")
+            return True
+        except Exception as e:
+            print(f"⚠ Error loading cookies: {e}")
+            return False
+
+    def _verify_login(self) -> bool:
+        """Verify if the current session is logged in."""
+        try:
+            # Navigate to a protected page to check login status
+            self.driver.get("https://www.coursera.org/my-learning")
+            time.sleep(3)
+
+            # Check if we're still on the my-learning page (logged in)
+            if "my-learning" in self.driver.current_url or self._check_logged_in():
+                print("✓ Already logged in")
+                return True
+            else:
+                print("ℹ Not logged in (redirected or login elements not found)")
+                return False
+        except Exception as e:
+            print(f"⚠ Error verifying login: {e}")
+            return False
+
+    def login_with_persistence(self):
+        """
+        Attempt to login using saved cookies, fall back to manual login if needed.
+        This allows users to stay logged in between script runs.
+        """
+        print(f"Attempting to login for: {self.email}")
+
+        # Try to load saved cookies first
+        if self._load_cookies():
+            # Sync cookies to requests session
+            for cookie in self.driver.get_cookies():
+                self.session.cookies.set(cookie['name'], cookie['value'])
+
+            # Verify the login is still valid
+            if self._verify_login():
+                # Login successful with saved cookies
+                return
+            else:
+                print("\nℹ Saved cookies are expired or invalid")
+                print("  Proceeding with manual login...\n")
+
+        # No saved cookies or they expired - do manual login
+        self.login_with_google()
 
     @staticmethod
     def sanitize_filename(filename: str) -> str:
@@ -1070,7 +1157,7 @@ class CourseraDownloader:
         """Download all courses from a professional certificate."""
         try:
             self.setup_driver()
-            self.login_with_google()
+            self.login_with_persistence()
 
             courses = [
                 "https://www.coursera.org/learn/foundations-of-data-science",
