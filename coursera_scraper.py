@@ -644,9 +644,15 @@ class CourseraDownloader:
         """Process and download Jupyter lab notebooks and data files."""
         downloaded_count = 0
         downloaded_something = False
+        original_window = None
+        lab_window = None
 
         try:
             print(f"  Processing lab...")
+
+            # Remember the original window handle
+            original_window = self.driver.current_window_handle
+            print(f"  Original window: {original_window}")
 
             # Launch lab
             launch_clicked = False
@@ -666,7 +672,27 @@ class CourseraDownloader:
                 print(f"  ℹ Could not launch lab")
                 return downloaded_something, downloaded_count
 
-            # Wait for a lab to load
+            # Wait for a new tab / window to open
+            print(f"  ⏳ Waiting for new tab to open...")
+            time.sleep(5)  # Give time for a new tab to open
+
+            # Check if a new window/tab was opened
+            all_windows = self.driver.window_handles
+            print(f"  Windows open: {len(all_windows)}")
+
+            if len(all_windows) > 1:
+                # New tab opened - switch to it
+                for window in all_windows:
+                    if window != original_window:
+                        lab_window = window
+                        break
+
+                if lab_window:
+                    print(f"  Switching to lab tab: {lab_window}")
+                    self.driver.switch_to.window(lab_window)
+                    time.sleep(2)
+
+            # Wait for a lab to load (either in new tab or same window)
             print(f"  ⏳ Waiting for lab environment to load (up to 60 seconds)...")
             try:
                 WebDriverWait(self.driver, 60).until(
@@ -677,6 +703,10 @@ class CourseraDownloader:
             except TimeoutException:
                 print(f"  ⚠ Timeout waiting for lab to load")
                 print(f"  Current URL: {self.driver.current_url}")
+                # Switch back to the original window before returning
+                if original_window and lab_window:
+                    print(f"  Switching back to original window")
+                    self.driver.switch_to.window(original_window)
                 return downloaded_something, downloaded_count
 
             # Check if lab directory exists in old location (course root)
@@ -772,6 +802,30 @@ class CourseraDownloader:
             print(f"  ⚠ Error processing lab: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # Clean up: close the lab tab and switch back to the original window
+            if lab_window and original_window:
+                try:
+                    # Check if the lab window is still open
+                    if lab_window in self.driver.window_handles:
+                        print(f"  Closing lab tab...")
+                        self.driver.switch_to.window(lab_window)
+                        self.driver.close()
+                        print(f"  ✓ Lab tab closed")
+
+                    # Switch back to the original window
+                    if original_window in self.driver.window_handles:
+                        print(f"  Switching back to original window...")
+                        self.driver.switch_to.window(original_window)
+                        print(f"  ✓ Back to course page")
+                except Exception as e:
+                    print(f"  ⚠ Error during cleanup: {e}")
+                    # Try to switch back to any available window
+                    try:
+                        if len(self.driver.window_handles) > 0:
+                            self.driver.switch_to.window(self.driver.window_handles[0])
+                    except:
+                        pass
 
         return downloaded_something, downloaded_count
 
@@ -832,7 +886,6 @@ class CourseraDownloader:
                 print(f"  ⚠ Timeout waiting for page content")
                 time.sleep(3)
 
-            item_type = self._determine_item_type(item_url)
             title = self._get_item_title(item_url)
 
             print(f"  📄 Item {item_counter}: {title} ({item_type})")
