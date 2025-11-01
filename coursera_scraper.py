@@ -9,13 +9,13 @@ import time
 import argparse
 import urllib.parse
 from pathlib import Path
-from typing import Set, Tuple, Optional
+from typing import Set, Tuple
 
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support import expected_conditions
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import yt_dlp
@@ -55,7 +55,7 @@ class CourseraDownloader:
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     def login_with_google(self):
-        """Login to Coursera using Google account."""
+        """Login to Coursera using a Google account."""
         print(f"Logging in with Google account: {self.email}")
         print("\nOpening Coursera login page...")
         print("Please complete the ENTIRE login process manually in the browser window.")
@@ -92,7 +92,7 @@ class CourseraDownloader:
             raise
 
     def _check_logged_in(self) -> bool:
-        """Check if user is logged in by looking for common authenticated elements."""
+        """Check if a user is logged in by looking for commonly authenticated elements."""
         try:
             self.driver.find_element(By.XPATH, "//button[contains(@aria-label, 'Profile')]")
             return True
@@ -107,13 +107,15 @@ class CourseraDownloader:
 
         return False
 
-    def sanitize_filename(self, filename: str) -> str:
-        """Remove invalid characters from filename."""
+    @staticmethod
+    def sanitize_filename(filename: str) -> str:
+        """Remove invalid characters from the filename."""
         return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
-    def _get_or_move_file(self, course_dir: Path, module_dir: Path, filename: str) -> Path:
+    @staticmethod
+    def _get_or_move_file(course_dir: Path, module_dir: Path, filename: str) -> Path:
         """
-        Check if file exists in course directory (from old runs), move it to module directory.
+        Check if a file exists in the course directory (from old runs), move it to the module directory.
         If not found, return the module directory path for saving.
 
         Args:
@@ -122,22 +124,22 @@ class CourseraDownloader:
             filename: The filename to check/save
 
         Returns:
-            Path object for the file in module directory
+            Path object for the file in the module directory
         """
         module_file = module_dir / filename
         course_file = course_dir / filename
 
-        # If file already exists in module directory, return it
+        # If a file already exists in the module directory, return it
         if module_file.exists():
             return module_file
 
-        # Check if file exists in course directory (from old flat structure)
+        # Check if a file exists in course directory (from old flat structure)
         if course_file.exists():
             print(f"  📦 Moving existing file to module directory: {filename}")
             try:
                 # Ensure module directory exists
                 module_dir.mkdir(exist_ok=True)
-                # Move file from course root to module directory
+                # Move file from course root to the module directory
                 course_file.rename(module_file)
                 print(f"  ✓ Moved: {filename}")
             except Exception as e:
@@ -202,7 +204,7 @@ class CourseraDownloader:
         print(f"  Waiting for module content to load...")
         try:
             WebDriverWait(self.driver, 30).until(
-                EC.presence_of_element_located((By.XPATH, "//ul[@data-testid='named-item-list-list']//a"))
+                expected_conditions.presence_of_element_located((By.XPATH, "//ul[@data-testid='named-item-list-list']//a"))
             )
             print(f"  ✓ Module content loaded")
             time.sleep(2)
@@ -210,7 +212,7 @@ class CourseraDownloader:
             print(f"  ⚠ Timeout waiting for module content to load")
 
     def _extract_module_items(self) -> list:
-        """Extract all item links from current module page."""
+        """Extract all item links from the current module page."""
         link_elements = self.driver.find_elements(By.XPATH,
             "//ul[@data-testid='named-item-list-list']//a[contains(@href, '/lecture/') or " +
             "contains(@href, '/supplement/') or contains(@href, '/quiz/') or " +
@@ -226,8 +228,9 @@ class CourseraDownloader:
 
         return item_links
 
-    def _determine_item_type(self, item_url: str) -> str:
-        """Determine the type of course item from its URL."""
+    @staticmethod
+    def _determine_item_type(item_url: str) -> str:
+        """Determine the type of the course item from its URL."""
         if '/lecture/' in item_url:
             return "video"
         elif '/supplement/' in item_url:
@@ -242,7 +245,7 @@ class CourseraDownloader:
             return "other"
 
     def _get_item_title(self, item_url: str) -> str:
-        """Extract item title from the page."""
+        """Extract the item title from the page."""
         title = "Untitled"
         try:
             for title_selector in ["h1", "h2", "[data-test='item-title']", ".item-title"]:
@@ -503,7 +506,7 @@ class CourseraDownloader:
         try:
             print(f"  Processing {item_type}...")
 
-            # Navigate to attempt page
+            # Navigate to the attempt page
             if '/attempt' not in self.driver.current_url:
                 start_clicked = False
                 for btn_text in ["Start Assignment", "Resume", "Continue", "Start Quiz", "Retake Quiz", "Review"]:
@@ -575,7 +578,7 @@ class CourseraDownloader:
                 downloaded_something = True
                 print(f"  ✓ {item_type.title()} content saved")
 
-                # Click Save Draft button
+                # Click the Save Draft button
                 try:
                     save_btn = self.driver.find_element(By.XPATH,
                         "//button[contains(., 'Save draft') or contains(., 'Save Draft')]")
@@ -618,7 +621,7 @@ class CourseraDownloader:
                 print(f"  ℹ Could not launch lab")
                 return downloaded_something, downloaded_count
 
-            # Wait for lab to load
+            # Wait for a lab to load
             print(f"  ⏳ Waiting for lab environment to load (up to 60 seconds)...")
             try:
                 WebDriverWait(self.driver, 60).until(
@@ -632,11 +635,11 @@ class CourseraDownloader:
                 return downloaded_something, downloaded_count
 
             # Check if lab directory exists in old location (course root)
-            lab_dirname = f"{item_counter:03d}_{title}_lab"
-            old_lab_dir = course_dir / lab_dirname
-            lab_dir = module_dir / lab_dirname
+            lab_dir_name = f"{item_counter:03d}_{title}_lab"
+            old_lab_dir = course_dir / lab_dir_name
+            lab_dir = module_dir / lab_dir_name
 
-            # Move old lab directory if it exists
+            # Move the old lab directory if it exists
             if old_lab_dir.exists() and old_lab_dir.is_dir():
                 print(f"  📦 Moving existing lab directory to module directory")
                 try:
@@ -646,7 +649,7 @@ class CourseraDownloader:
                 except Exception as e:
                     print(f"  ⚠ Error moving lab directory: {e}")
 
-            # Create lab directory
+            # Create a lab directory
             lab_dir.mkdir(exist_ok=True)
 
             # Download notebook and data files
@@ -728,7 +731,7 @@ class CourseraDownloader:
         return downloaded_something, downloaded_count
 
     def _find_lab_data_files(self) -> Set[str]:
-        """Find data files referenced in lab notebook."""
+        """Find data files referenced in the lab notebook."""
         page_source = self.driver.page_source
 
         file_patterns = [
@@ -767,7 +770,7 @@ class CourseraDownloader:
             # Wait for content to load
             try:
                 WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.XPATH, "//main | //div[@role='main']"))
+                    expected_conditions.presence_of_element_located((By.XPATH, "//main | //div[@role='main']"))
                 )
                 time.sleep(2)
             except TimeoutException:
@@ -873,7 +876,7 @@ class CourseraDownloader:
         return items_processed, materials_downloaded
 
     def get_course_content(self, course_url: str) -> int:
-        """Navigate through course and collect all downloadable materials."""
+        """Navigate through the course and collect all downloadable materials."""
         print(f"\n{'=' * 60}")
         course_slug = course_url.split('/learn/')[-1].split('/')[0]
         print(f"Processing course: {course_slug}")
@@ -918,7 +921,7 @@ class CourseraDownloader:
 
         return total_materials
 
-    def download_certificate(self, cert_url: str):
+    def download_certificate(self):
         """Download all courses from a professional certificate."""
         try:
             self.setup_driver()
@@ -1004,7 +1007,7 @@ def main():
         headless=args.headless
     )
 
-    downloader.download_certificate(args.cert_url)
+    downloader.download_certificate()
 
 
 if __name__ == "__main__":
