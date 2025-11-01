@@ -1,0 +1,1 @@
+make sure to write comments with proper English grammar. For example: "checks if the file exists" instead of "check file exist"
