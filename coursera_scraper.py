@@ -109,8 +109,16 @@ class CourseraDownloader:
 
     @staticmethod
     def sanitize_filename(filename: str) -> str:
-        """Remove invalid characters from the filename."""
-        return re.sub(r'[<>:"/\\|?*]', '_', filename)
+        """Remove invalid characters from filename, convert to lowercase with underscores."""
+        # Replace invalid characters with underscores
+        sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        # Replace spaces with underscores
+        sanitized = sanitized.replace(' ', '_')
+        # Convert to lowercase
+        sanitized = sanitized.lower()
+        # Remove multiple consecutive underscores
+        sanitized = re.sub(r'_+', '_', sanitized)
+        return sanitized
 
     @staticmethod
     def _get_or_move_file(course_dir: Path, module_dir: Path, filename: str) -> Path:
