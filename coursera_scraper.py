@@ -389,6 +389,7 @@ class CourseraDownloader:
         elif '/ungradedLab/' in item_url or '/gradedLab/' in item_url:
             return "lab"
         else:
+            warnings.warn(f"Un-recognized item type: {item_url}")
             return "other"
 
     def _get_item_title(self, item_url: str) -> str:
