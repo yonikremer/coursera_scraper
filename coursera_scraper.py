@@ -7,9 +7,9 @@ Downloads all course materials from enrolled Coursera courses/professional certi
 import re
 import time
 import argparse
+import urllib.parse
 from pathlib import Path
-from typing import Any
-
+from typing import Set, Tuple, Optional
 
 import requests
 from selenium import webdriver
@@ -24,7 +24,7 @@ import yt_dlp
 class CourseraDownloader:
     """Download materials from Coursera courses."""
 
-    def __init__(self, email, download_dir="coursera_downloads", headless=False):
+    def __init__(self, email: str, download_dir: str = "coursera_downloads", headless: bool = False):
         self.email = email
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(exist_ok=True)
@@ -43,7 +43,6 @@ class CourseraDownloader:
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
 
-        # Set download preferences
         prefs = {
             "download.default_directory": str(self.download_dir.absolute()),
             "download.prompt_for_download": False,
@@ -71,22 +70,17 @@ class CourseraDownloader:
         time.sleep(3)
 
         try:
-            # Wait for user to complete login manually
-            # Check if we're logged in by looking for profile or authenticated content
             WebDriverWait(self.driver, 180).until(
                 lambda driver: (
-                                       "coursera.org" in driver.current_url and
-                                       "authMode=login" not in driver.current_url and
-                                       "authMode=signup" not in driver.current_url
-                               ) or self._check_logged_in()
+                    "coursera.org" in driver.current_url and
+                    "authMode=login" not in driver.current_url and
+                    "authMode=signup" not in driver.current_url
+                ) or self._check_logged_in()
             )
 
-            # Give extra time for page to fully load
             time.sleep(3)
-
             print("✓ Login successful!")
 
-            # Extract cookies for requests session
             for cookie in self.driver.get_cookies():
                 self.session.cookies.set(cookie['name'], cookie['value'])
 
@@ -97,10 +91,9 @@ class CourseraDownloader:
             print("  - Wait until you see the main Coursera homepage")
             raise
 
-    def _check_logged_in(self):
+    def _check_logged_in(self) -> bool:
         """Check if user is logged in by looking for common authenticated elements."""
         try:
-            # Try to find elements that only appear when logged in
             self.driver.find_element(By.XPATH, "//button[contains(@aria-label, 'Profile')]")
             return True
         except NoSuchElementException:
@@ -114,71 +107,13 @@ class CourseraDownloader:
 
         return False
 
-    def get_professional_certificate_courses(self, cert_url):
-        """Get all course URLs from a professional certificate."""
-        print(f"\nFetching courses from: {cert_url}")
-        self.driver.get(cert_url)
-        time.sleep(5)
-
-        courses = []
-
-        try:
-            # Scroll down to load all courses
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-            self.driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(1)
-
-            # Look for course links in the certificate page
-            course_elements = self.driver.find_elements(By.XPATH, "//a[contains(@href, '/learn/')]")
-
-            for elem in course_elements:
-                href = elem.get_attribute('href')
-                if href and '/learn/' in href:
-                    # Clean up URL
-                    base_url = href.split('?')[0].split('#')[0]
-                    if base_url not in courses:
-                        courses.append(base_url)
-
-            # Deduplicate and filter
-            courses = list(dict.fromkeys(courses))  # Preserve order
-            courses = [c for c in courses if '/learn/' in c and '/lecture/' not in c and '/supplement/' not in c]
-
-            if not courses:
-                print("⚠ No courses found automatically. Trying alternative method...")
-                # Fallback: Try to find course titles and construct URLs
-                course_cards = self.driver.find_elements(By.XPATH, "//h3[contains(@class, 'course')]")
-                for card in course_cards:
-                    try:
-                        parent = card.find_element(By.XPATH, "./ancestor::a[contains(@href, '/learn/')]")
-                        href = parent.get_attribute('href')
-                        if href:
-                            base_url = href.split('?')[0].split('#')[0]
-                            if base_url not in courses:
-                                courses.append(base_url)
-                    except:
-                        continue
-
-            print(f"✓ Found {len(courses)} courses in the certificate")
-            for i, course in enumerate(courses, 1):
-                course_name = course.split('/learn/')[-1].split('/')[0]
-                print(f"  {i}. {course_name}")
-
-        except Exception as e:
-            print(f"⚠ Error fetching courses: {e}")
-            import traceback
-            traceback.print_exc()
-
-        return courses
-
-    def sanitize_filename(self, filename):
+    def sanitize_filename(self, filename: str) -> str:
         """Remove invalid characters from filename."""
         return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
-    def download_file(self, url, filepath):
+    def download_file(self, url: str, filepath: Path) -> bool:
         """Download a file from URL."""
         try:
-            # Check if file already exists
             if filepath.exists() and filepath.stat().st_size > 0:
                 print(f"  ℹ File already exists, skipping: {filepath.name}")
                 return True
@@ -197,15 +132,13 @@ class CourseraDownloader:
             print(f"  ⚠ Error downloading {url}: {e}")
             return False
 
-    def download_video(self, video_url, filepath):
+    def download_video(self, video_url: str, filepath: Path) -> bool:
         """Download video using yt-dlp."""
         try:
-            # Get cookies from selenium session
             cookies_dict = {}
             for cookie in self.driver.get_cookies():
                 cookies_dict[cookie['name']] = cookie['value']
 
-            # Create cookies file for yt-dlp
             cookies_file = self.download_dir / "cookies.txt"
             with open(cookies_file, 'w') as f:
                 f.write("# Netscape HTTP Cookie File\n")
@@ -215,7 +148,7 @@ class CourseraDownloader:
             ydl_opts = {
                 'outtmpl': str(filepath),
                 'cookiefile': str(cookies_file),
-                'format': 'best[height<=720]',  # Download 720p or lower quality
+                'format': 'best[height<=720]',
                 'quiet': True,
                 'no_warnings': True,
             }
@@ -230,309 +163,202 @@ class CourseraDownloader:
             print(f"  ⚠ Error downloading video: {e}")
             return False
 
-    def get_course_content(self, course_url):
-        """Navigate through course and collect all downloadable materials."""
-        print(f"\n{'=' * 60}")
-        course_slug = course_url.split('/learn/')[-1].split('/')[0]
-        print(f"Processing course: {course_slug}")
-        print(f"{'=' * 60}")
+    def _wait_for_module_content(self):
+        """Wait for module content to load."""
+        print(f"  Waiting for module content to load...")
+        try:
+            WebDriverWait(self.driver, 30).until(
+                EC.presence_of_element_located((By.XPATH, "//ul[@data-testid='named-item-list-list']//a"))
+            )
+            print(f"  ✓ Module content loaded")
+            time.sleep(2)
+        except TimeoutException:
+            print(f"  ⚠ Timeout waiting for module content to load")
 
-        course_dir = self.download_dir / self.sanitize_filename(course_slug)
-        course_dir.mkdir(exist_ok=True)
+    def _extract_module_items(self) -> list:
+        """Extract all item links from current module page."""
+        link_elements = self.driver.find_elements(By.XPATH,
+            "//ul[@data-testid='named-item-list-list']//a[contains(@href, '/lecture/') or " +
+            "contains(@href, '/supplement/') or contains(@href, '/quiz/') or " +
+            "contains(@href, '/exam/') or contains(@href, '/assignment/') or " +
+            "contains(@href, '/programming/') or contains(@href, '/ungradedLab/') or " +
+            "contains(@href, '/gradedLab/')]")
 
-        materials_downloaded = 0
-        visited_urls = set()
-        downloaded_files = set()
-        item_counter = 0
+        item_links = []
+        for elem in link_elements:
+            href = elem.get_attribute('href')
+            if href and href not in item_links:
+                item_links.append(href)
+
+        return item_links
+
+    def _determine_item_type(self, item_url: str) -> str:
+        """Determine the type of course item from its URL."""
+        if '/lecture/' in item_url:
+            return "video"
+        elif '/supplement/' in item_url:
+            return "reading"
+        elif '/quiz/' in item_url or '/exam/' in item_url:
+            return "quiz"
+        elif '/assignment/' in item_url or '/programming/' in item_url:
+            return "assignment"
+        elif '/ungradedLab/' in item_url or '/gradedLab/' in item_url:
+            return "lab"
+        else:
+            return "other"
+
+    def _get_item_title(self, item_url: str) -> str:
+        """Extract item title from the page."""
+        title = "Untitled"
+        try:
+            for title_selector in ["h1", "h2", "[data-test='item-title']", ".item-title"]:
+                try:
+                    title_elem = self.driver.find_element(By.CSS_SELECTOR, title_selector)
+                    if title_elem.text.strip():
+                        title = self.sanitize_filename(title_elem.text.strip())
+                        break
+                except:
+                    continue
+        except:
+            title = item_url.split('/')[-1].split('?')[0]
+
+        return title
+
+    def _process_video_item(self, module_dir: Path, item_counter: int, title: str, item_url: str) -> Tuple[bool, int]:
+        """Process and download video items."""
+        downloaded_count = 0
+        downloaded_something = False
 
         try:
-            # Navigate to course home
-            print("\nNavigating to course...")
-            self.driver.get(course_url)
-            time.sleep(5)
+            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+            print(f"  Found {len(video_elements)} video element(s)")
 
-            # Iterate through modules (1 to 20 max)
-            for module_num in range(1, 21):
-                module_url = f"{course_url}/home/module/{module_num}"
+            for idx, video in enumerate(video_elements):
+                sources = [
+                    video.get_attribute('src'),
+                    *[source.get_attribute('src') for source in video.find_elements(By.TAG_NAME, 'source')]
+                ]
 
-                print(f"\n{'─' * 60}")
-                print(f"📂 Checking Module {module_num}")
-                print(f"{'─' * 60}")
+                sources_720p = [s for s in sources if s and '720' in s]
+                if sources_720p:
+                    sources = sources_720p
+                else:
+                    sources = [s for s in sources if s]
 
-                self.driver.get(module_url)
+                for video_src in sources:
+                    if video_src:
+                        print(f"  Video source: {video_src[:80]}...")
+                        video_file = module_dir / f"{item_counter:03d}_{title}_{idx}.mp4"
 
-                # Wait a moment for initial page load
-                time.sleep(2)
-
-                # Check if module exists (page doesn't redirect)
-                if f"module/{module_num}" not in self.driver.current_url:
-                    print(f"✓ No more modules found (attempted module {module_num})")
-                    print(f"  Continuing to next course...")
-                    break
-
-                # Wait for the module content to actually load
-                # Look for the named-item-list-list element with actual content
-                print(f"  Waiting for module content to load...")
-
-                try:
-                    # Wait up to 30 seconds for the item list to appear and have content
-                    WebDriverWait(self.driver, 30).until(
-                        EC.presence_of_element_located((By.XPATH, "//ul[@data-testid='named-item-list-list']//a"))
-                    )
-                    print(f"  ✓ Module content loaded")
-
-                    # Give a bit more time for all items to render
-                    time.sleep(2)
-
-                except TimeoutException:
-                    print(f"  ⚠ Timeout waiting for module content to load")
-                    # Continue anyway to check if items are there
-
-                # Extract all item links from this module page
-                # Look for links in the ul[data-testid="named-item-list-list"]
-                item_links = []
-
-                # Find all <a> elements that have href containing lecture, supplement, assignment, etc.
-                link_elements = self.driver.find_elements(By.XPATH,
-                                                          "//ul[@data-testid='named-item-list-list']//a[contains(@href, '/lecture/') or " +
-                                                          "contains(@href, '/supplement/') or contains(@href, '/quiz/') or " +
-                                                          "contains(@href, '/exam/') or contains(@href, '/assignment/') or " +
-                                                          "contains(@href, '/programming/')]")
-
-                for elem in link_elements:
-                    href = elem.get_attribute('href')
-                    if href and href not in item_links:
-                        item_links.append(href)
-
-                print(f"  Found {len(item_links)} items in module {module_num}")
-
-                if len(item_links) == 0:
-                    print(f"\n❌ ERROR: No items found in module {module_num}")
-                    print(f"Current URL: {self.driver.current_url}")
-
-                    # Save page source for debugging
-                    debug_file = self.download_dir / f"debug_module_{module_num}_{course_slug}.html"
-                    with open(debug_file, 'w', encoding='utf-8') as f:
-                        f.write(self.driver.page_source)
-
-                    print(f"Page source saved to: {debug_file}")
-                    print(f"Page title: {self.driver.title}")
-
-                    raise Exception(f"No items found in module {module_num}. Page source saved for debugging.")
-
-
-                # Now visit each item in sequence
-                for idx, item_url in enumerate(item_links, 1):
-                    print(f"found item: {item_url}")
-                    if item_url in visited_urls:
-                        print(f"\n  [{idx}/{len(item_links)}] ⏭ Already processed, skipping...")
-                        continue
-
-                    visited_urls.add(item_url)
-                    item_counter += 1
-
-                    try:
-                        print(f"\n  [{idx}/{len(item_links)}] Navigating to item...")
-                        self.driver.get(item_url)
-
-                        # Wait for the main content to load
-                        try:
-                            WebDriverWait(self.driver, 15).until(
-                                EC.presence_of_element_located((By.XPATH, "//main | //div[@role='main']"))
-                            )
-                            time.sleep(2)  # Extra time for dynamic content
-                        except TimeoutException:
-                            print(f"  ⚠ Timeout waiting for page content")
-                            time.sleep(3)  # Fallback wait
-
-                        # Determine item type from URL
-                        if '/lecture/' in item_url:
-                            item_type = "video"
-                        elif '/supplement/' in item_url:
-                            item_type = "reading"
-                        elif '/quiz/' in item_url or '/exam/' in item_url:
-                            item_type = "quiz"
-                        elif '/assignment/' in item_url or '/programming/' in item_url:
-                            item_type = "assignment"
-                        else:
-                            item_type = "other"
-
-                        # Get item title
-                        title = "Untitled"
-                        try:
-                            for title_selector in ["h1", "h2", "[data-test='item-title']", ".item-title"]:
-                                try:
-                                    title_elem = self.driver.find_element(By.CSS_SELECTOR, title_selector)
-                                    if title_elem.text.strip():
-                                        title = self.sanitize_filename(title_elem.text.strip())
-                                        break
-                                except:
-                                    continue
-                        except:
-                            title = item_url.split('/')[-1].split('?')[0]
-
-                        print(f"  📄 Module {module_num} - Item {item_counter}: {title} ({item_type})")
-
-                        # Download materials from current page
-                        downloaded_something = False
-
-                        # 1. Try to download videos
-                        if item_type == "video":
+                        if not video_file.exists():
+                            print(f"  ⬇ Downloading video (720p preferred)...")
                             try:
-                                downloaded_something, materials_downloaded = self.download_vid(course_dir,
-                                                                                               downloaded_something,
-                                                                                               item_counter, item_url,
-                                                                                               materials_downloaded,
-                                                                                               title)
-                            except Exception as e:
-                                print(f"  ⚠ Error finding video: {e}")
-
-                            # Also look for download buttons
-                            try:
-                                download_btns = self.driver.find_elements(By.XPATH,
-                                                                          "//a[contains(text(), 'Download') and (contains(@href, '.mp4') or contains(@href, 'video'))]")
-
-                                for btn in download_btns:
-                                    href = btn.get_attribute('href')
-                                    if href:
-                                        href = self.sanitize_filename(href).replace("full/540p", "full/720p")
-                                        print(f"  Found download link: {href[:80]}...")
-                                        video_file = course_dir / f"{item_counter:03d}_{title}.mp4"
-                                        if not video_file.exists():
-                                            if self.download_file(href, video_file):
-                                                materials_downloaded += 1
-                                                downloaded_something = True
-                                                print(f"  ✓ Video saved: {video_file.name}")
-                            except:
-                                pass
-
-                        # 2. Try to download PDFs (exclude footer)
-                        try:
-                            # Only look for PDFs in main content area, not footer
-                            pdf_links = self.driver.find_elements(By.XPATH,
-                                                                  "//main//a[contains(@href, '.pdf')] | //div[@role='main']//a[contains(@href, '.pdf')] | " +
-                                                                  "//article//a[contains(@href, '.pdf')]")
-
-                            # Filter out footer links
-                            main_pdf_links = []
-                            for link in pdf_links:
-                                try:
-                                    # Check if link is inside footer
-                                    parent_html = link.find_element(By.XPATH, "./ancestor::footer")
-                                    # If we found a footer parent, skip this link
-                                    continue
-                                except:
-                                    # No footer parent, this is a valid link
-                                    main_pdf_links.append(link)
-
-                            if main_pdf_links:
-                                print(f"  Found {len(main_pdf_links)} PDF link(s) in main content")
-
-                            for link in main_pdf_links:
-                                href = link.get_attribute('href')
-                                if href and href not in downloaded_files:
-                                    downloaded_files.add(href)
-                                    link_text = link.text.strip() or "document"
-                                    filename = self.sanitize_filename(link_text)
-                                    if not filename.endswith('.pdf'):
-                                        filename += '.pdf'
-
-                                    pdf_file = course_dir / f"{item_counter:03d}_{filename}"
-                                    print(f"  ⬇ Downloading PDF: {filename}")
-                                    if self.download_file(href, pdf_file):
-                                        materials_downloaded += 1
+                                if self.download_file(video_src, video_file):
+                                    downloaded_count += 1
+                                    downloaded_something = True
+                                    print(f"  ✓ Video saved: {video_file.name}")
+                                else:
+                                    print(f"  Trying alternative download method (720p)...")
+                                    if self.download_video(item_url, video_file):
+                                        downloaded_count += 1
                                         downloaded_something = True
-                                        print(f"  ✓ PDF saved: {filename}")
-                        except Exception as e:
-                            print(f"  ⚠ Error processing PDFs: {e}")
+                                        print(f"  ✓ Video saved: {video_file.name}")
+                            except Exception as e:
+                                print(f"  ⚠ Error downloading video: {e}")
+                        else:
+                            print(f"  ℹ Video already exists: {video_file.name}")
+                            downloaded_something = True
 
-                        # 3. Save reading content as HTML and download attachments
-                        if item_type == "reading":
-                            try:
-                                content = None
-                                for selector in [
-                                    "div[class*='rc-CML']",
-                                    "div[class*='content']",
-                                    "div[role='main']",
-                                    "article",
-                                    "main"
-                                ]:
-                                    try:
-                                        content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                                        content = content_elem.get_attribute('innerHTML')
-                                        if content and len(content) > 100:
-                                            break
-                                    except:
-                                        continue
+            # Also check for download buttons
+            download_btns = self.driver.find_elements(By.XPATH,
+                "//a[contains(text(), 'Download') and (contains(@href, '.mp4') or contains(@href, 'video'))]")
 
-                                # Download attachments from the reading
-                                try:
-                                    # Find attachment links (DOCX, PDF, etc.)
-                                    attachment_links = self.driver.find_elements(By.XPATH,
-                                        "//a[@data-e2e='asset-download-link'] | " +
-                                        "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'cloudfront.net')]")
+            for btn in download_btns:
+                href = btn.get_attribute('href')
+                if href:
+                    href = href.replace("full/540p", "full/720p")
+                    print(f"  Found download link: {href[:80]}...")
+                    video_file = module_dir / f"{item_counter:03d}_{title}.mp4"
+                    if not video_file.exists():
+                        if self.download_file(href, video_file):
+                            downloaded_count += 1
+                            downloaded_something = True
+                            print(f"  ✓ Video saved: {video_file.name}")
 
-                                    for attach_link in attachment_links:
-                                        try:
-                                            attach_url = attach_link.get_attribute('href')
-                                            if not attach_url or attach_url in downloaded_files:
-                                                continue
+        except Exception as e:
+            print(f"  ⚠ Error processing video: {e}")
 
-                                            downloaded_files.add(attach_url)
+        return downloaded_something, downloaded_count
 
-                                            # Try to get filename from data-name attribute or link text
-                                            attach_name = None
-                                            try:
-                                                # Look for data-name attribute in child elements
-                                                asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-name]")
-                                                attach_name = asset_elem.get_attribute('data-name')
-                                            except:
-                                                pass
+    def _process_pdf_items(self, module_dir: Path, item_counter: int, downloaded_files: Set[str]) -> Tuple[bool, int]:
+        """Process and download PDF items."""
+        downloaded_count = 0
+        downloaded_something = False
 
-                                            if not attach_name:
-                                                # Try to get from data-e2e="asset-name" element
-                                                try:
-                                                    name_elem = attach_link.find_element(By.XPATH, ".//div[@data-e2e='asset-name']")
-                                                    attach_name = name_elem.text.strip()
-                                                except:
-                                                    pass
+        try:
+            pdf_links = self.driver.find_elements(By.XPATH,
+                "//main//a[contains(@href, '.pdf')] | //div[@role='main']//a[contains(@href, '.pdf')] | " +
+                "//article//a[contains(@href, '.pdf')]")
 
-                                            if not attach_name:
-                                                # Fallback to URL filename
-                                                attach_name = attach_url.split('/')[-1].split('?')[0]
+            main_pdf_links = []
+            for link in pdf_links:
+                try:
+                    link.find_element(By.XPATH, "./ancestor::footer")
+                    continue
+                except:
+                    main_pdf_links.append(link)
 
-                                            # Get file extension from data-extension or URL
-                                            extension = None
-                                            try:
-                                                asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-extension]")
-                                                extension = asset_elem.get_attribute('data-extension')
-                                            except:
-                                                # Try to extract from URL
-                                                if '.' in attach_url.split('/')[-1].split('?')[0]:
-                                                    extension = attach_url.split('/')[-1].split('?')[0].split('.')[-1]
+            if main_pdf_links:
+                print(f"  Found {len(main_pdf_links)} PDF link(s) in main content")
 
-                                            # Ensure filename has extension
-                                            attach_name = self.sanitize_filename(attach_name)
-                                            if extension and not attach_name.endswith(f'.{extension}'):
-                                                attach_name = f"{attach_name}.{extension}"
+            for link in main_pdf_links:
+                href = link.get_attribute('href')
+                if href and href not in downloaded_files:
+                    downloaded_files.add(href)
+                    link_text = link.text.strip() or "document"
+                    filename = self.sanitize_filename(link_text)
+                    if not filename.endswith('.pdf'):
+                        filename += '.pdf'
 
-                                            attach_file = course_dir / f"{item_counter:03d}_attachment_{attach_name}"
+                    pdf_file = module_dir / f"{item_counter:03d}_{filename}"
+                    print(f"  ⬇ Downloading PDF: {filename}")
+                    if self.download_file(href, pdf_file):
+                        downloaded_count += 1
+                        downloaded_something = True
+                        print(f"  ✓ PDF saved: {filename}")
 
-                                            print(f"  ⬇ Downloading attachment: {attach_name}")
-                                            if self.download_file(attach_url, attach_file):
-                                                materials_downloaded += 1
-                                                downloaded_something = True
-                                                print(f"  ✓ Attachment saved: {attach_name}")
-                                        except Exception as e:
-                                            print(f"  ⚠ Error downloading attachment: {e}")
-                                            continue
-                                except Exception as e:
-                                    print(f"  ⚠ Error processing attachments: {e}")
+        except Exception as e:
+            print(f"  ⚠ Error processing PDFs: {e}")
 
-                                if content:
-                                    html_file = course_dir / f"{item_counter:03d}_{title}.html"
-                                    with open(html_file, 'w', encoding='utf-8') as f:
-                                        f.write(f"""<!DOCTYPE html>
+        return downloaded_something, downloaded_count
+
+    def _process_reading_item(self, module_dir: Path, item_counter: int, title: str,
+                             downloaded_files: Set[str]) -> Tuple[bool, int]:
+        """Process and save reading content and attachments."""
+        downloaded_count = 0
+        downloaded_something = False
+
+        try:
+            # Get reading content
+            content = None
+            for selector in ["div[class*='rc-CML']", "div[class*='content']", "div[role='main']",
+                           "article", "main"]:
+                try:
+                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    content = content_elem.get_attribute('innerHTML')
+                    if content and len(content) > 100:
+                        break
+                except:
+                    continue
+
+            # Download attachments
+            downloaded_count += self._download_attachments(module_dir, item_counter, downloaded_files)
+
+            # Save HTML content
+            if content:
+                html_file = module_dir / f"{item_counter:03d}_{title}.html"
+                with open(html_file, 'w', encoding='utf-8') as f:
+                    f.write(f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
@@ -550,54 +376,470 @@ class CourseraDownloader:
 </body>
 </html>""")
 
-                                materials_downloaded += 1
-                                downloaded_something = True
-                                print(f"  ✓ Reading saved as HTML")
-                            except Exception as e:
-                                print(f"  ⚠ Could not save reading: {e}")
+                downloaded_count += 1
+                downloaded_something = True
+                print(f"  ✓ Reading saved as HTML")
 
-                        # 4. Download other resources (exclude footer)
-                        try:
-                            # Only look in main content area
-                            resource_links = self.driver.find_elements(By.XPATH,
-                                                                       "//main//a[@download or contains(text(), 'Download')] | " +
-                                                                       "//div[@role='main']//a[@download or contains(text(), 'Download')] | " +
-                                                                       "//article//a[@download or contains(text(), 'Download')]")
+        except Exception as e:
+            print(f"  ⚠ Could not save reading: {e}")
 
-                            # Filter out footer links
-                            main_resource_links = []
-                            for link in resource_links:
-                                try:
-                                    parent_html = link.find_element(By.XPATH, "./ancestor::footer")
-                                    continue
-                                except:
-                                    main_resource_links.append(link)
+        return downloaded_something, downloaded_count
 
-                            for link in main_resource_links:
-                                href = link.get_attribute('href')
-                                if href and href not in downloaded_files and not any(
-                                        x in href for x in ['.pdf', 'video', '.mp4']):
-                                    downloaded_files.add(href)
-                                    link_text = link.text.strip() or "resource"
-                                    filename = self.sanitize_filename(link_text)
+    def _download_attachments(self, module_dir: Path, item_counter: int, downloaded_files: Set[str]) -> int:
+        """Download attachments from reading items."""
+        downloaded_count = 0
 
-                                    resource_file = course_dir / f"{item_counter:03d}_{filename}"
-                                    print(f"  ⬇ Downloading resource: {filename}")
-                                    if self.download_file(href, resource_file):
-                                        materials_downloaded += 1
-                                        downloaded_something = True
-                                        print(f"  ✓ Resource saved")
-                        except Exception as e:
-                            print(f"  ⚠ Error processing resources: {e}")
+        try:
+            attachment_links = self.driver.find_elements(By.XPATH,
+                "//a[@data-e2e='asset-download-link'] | " +
+                "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'cloudfront.net')]")
 
-                        if not downloaded_something and item_type not in ["quiz", "assignment"]:
-                            print(f"  ℹ No downloadable materials found")
-
-                    except Exception as e:
-                        print(f"  ⚠ Error processing item: {e}")
-                        import traceback
-                        traceback.print_exc()
+            for attach_link in attachment_links:
+                try:
+                    attach_url = attach_link.get_attribute('href')
+                    if not attach_url or attach_url in downloaded_files:
                         continue
+
+                    downloaded_files.add(attach_url)
+
+                    # Get filename from data-name attribute or link text
+                    attach_name = None
+                    try:
+                        asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-name]")
+                        attach_name = asset_elem.get_attribute('data-name')
+                    except:
+                        pass
+
+                    if not attach_name:
+                        try:
+                            name_elem = attach_link.find_element(By.XPATH, ".//div[@data-e2e='asset-name']")
+                            attach_name = name_elem.text.strip()
+                        except:
+                            pass
+
+                    if not attach_name:
+                        attach_name = attach_url.split('/')[-1].split('?')[0]
+
+                    # Get file extension
+                    extension = None
+                    try:
+                        asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-extension]")
+                        extension = asset_elem.get_attribute('data-extension')
+                    except:
+                        if '.' in attach_url.split('/')[-1].split('?')[0]:
+                            extension = attach_url.split('/')[-1].split('?')[0].split('.')[-1]
+
+                    attach_name = self.sanitize_filename(attach_name)
+                    if extension and not attach_name.endswith(f'.{extension}'):
+                        attach_name = f"{attach_name}.{extension}"
+
+                    attach_file = module_dir / f"{item_counter:03d}_attachment_{attach_name}"
+
+                    print(f"  ⬇ Downloading attachment: {attach_name}")
+                    if self.download_file(attach_url, attach_file):
+                        downloaded_count += 1
+                        print(f"  ✓ Attachment saved: {attach_name}")
+
+                except Exception as e:
+                    print(f"  ⚠ Error downloading attachment: {e}")
+                    continue
+
+        except Exception as e:
+            print(f"  ⚠ Error processing attachments: {e}")
+
+        return downloaded_count
+
+    def _process_assignment_or_quiz(self, module_dir: Path, item_counter: int, title: str,
+                                    item_type: str) -> Tuple[bool, int]:
+        """Process and save assignment or quiz content."""
+        downloaded_count = 0
+        downloaded_something = False
+
+        try:
+            print(f"  Processing {item_type}...")
+
+            # Navigate to attempt page
+            if '/attempt' not in self.driver.current_url:
+                start_clicked = False
+                for btn_text in ["Start Assignment", "Resume", "Continue", "Start Quiz", "Retake Quiz", "Review"]:
+                    try:
+                        start_btn = self.driver.find_element(By.XPATH,
+                            f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]")
+                        if start_btn.is_displayed() and start_btn.is_enabled():
+                            start_btn.click()
+                            print(f"  ✓ Clicked '{btn_text}'")
+                            time.sleep(4)
+                            start_clicked = True
+                            break
+                    except:
+                        continue
+
+                if not start_clicked:
+                    print(f"  ℹ Already on assignment/quiz page or no start button found")
+
+            # Wait for attempt page
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: '/attempt' in d.current_url or
+                             d.find_element(By.CSS_SELECTOR, "div.rc-FormPartsQuestion, form, div.rc-CMLOrHTML")
+                )
+                time.sleep(2)
+            except:
+                pass
+
+            print(f"  Current URL: {self.driver.current_url}")
+
+            # Save content
+            assignment_content = None
+            for selector in ["div[role='main']", "main", "div.rc-FormPartsQuestion",
+                           "div.rc-CMLOrHTML", "form"]:
+                try:
+                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    assignment_content = content_elem.get_attribute('outerHTML')
+                    if assignment_content and len(assignment_content) > 100:
+                        break
+                except:
+                    continue
+
+            if assignment_content:
+                assignment_file = module_dir / f"{item_counter:03d}_{title}_{item_type}.html"
+                with open(assignment_file, 'w', encoding='utf-8') as f:
+                    f.write(f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{title}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
+        img {{ max-width: 100%; height: auto; }}
+        code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }}
+        pre {{ background: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+        .question {{ margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #007bff; }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    <p><strong>Type:</strong> {item_type.title()}</p>
+    <p><strong>URL:</strong> {self.driver.current_url}</p>
+    <hr>
+    {assignment_content}
+</body>
+</html>""")
+                downloaded_count += 1
+                downloaded_something = True
+                print(f"  ✓ {item_type.title()} content saved")
+
+                # Click Save Draft button
+                try:
+                    save_btn = self.driver.find_element(By.XPATH,
+                        "//button[contains(., 'Save draft') or contains(., 'Save Draft')]")
+                    if save_btn.is_displayed() and save_btn.is_enabled():
+                        save_btn.click()
+                        print(f"  ✓ Clicked 'Save draft'")
+                        time.sleep(2)
+                except:
+                    print(f"  ℹ No 'Save draft' button found")
+
+        except Exception as e:
+            print(f"  ⚠ Error processing {item_type}: {e}")
+
+        return downloaded_something, downloaded_count
+
+    def _process_lab_item(self, module_dir: Path, item_counter: int, title: str) -> Tuple[bool, int]:
+        """Process and download Jupyter lab notebooks and data files."""
+        downloaded_count = 0
+        downloaded_something = False
+
+        try:
+            print(f"  Processing lab...")
+
+            # Launch lab
+            launch_clicked = False
+            for btn_text in ["Launch Lab", "Open Tool", "Launch", "Continue"]:
+                try:
+                    launch_btn = self.driver.find_element(By.XPATH,
+                        f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]")
+                    if launch_btn.is_displayed() and launch_btn.is_enabled():
+                        print(f"  ✓ Clicking '{btn_text}'...")
+                        launch_btn.click()
+                        launch_clicked = True
+                        break
+                except:
+                    continue
+
+            if not launch_clicked:
+                print(f"  ℹ Could not launch lab")
+                return downloaded_something, downloaded_count
+
+            # Wait for lab to load
+            print(f"  ⏳ Waiting for lab environment to load (up to 60 seconds)...")
+            try:
+                WebDriverWait(self.driver, 60).until(
+                    lambda d: '/lab' in d.current_url and 'path=' in d.current_url
+                )
+                print(f"  ✓ Lab loaded: {self.driver.current_url}")
+                time.sleep(5)
+            except TimeoutException:
+                print(f"  ⚠ Timeout waiting for lab to load")
+                print(f"  Current URL: {self.driver.current_url}")
+                return downloaded_something, downloaded_count
+
+            # Create lab directory
+            lab_dir = module_dir / f"{item_counter:03d}_{title}_lab"
+            lab_dir.mkdir(exist_ok=True)
+
+            # Download notebook and data files
+            current_url = self.driver.current_url
+            parsed_url = urllib.parse.urlparse(current_url)
+            params = urllib.parse.parse_qs(parsed_url.query)
+            notebook_path = params.get('path', [''])[0]
+
+            if notebook_path:
+                notebook_path = urllib.parse.unquote(notebook_path)
+                notebook_name = notebook_path.split('/')[-1]
+                print(f"  Notebook: {notebook_name}")
+
+                base_lab_url = current_url.split('/lab?')[0]
+
+                # Download notebook
+                notebook_download_url = f"{base_lab_url}/lab/api/contents/{notebook_path}"
+                print(f"  ⬇ Downloading notebook: {notebook_name}")
+
+                notebook_file = lab_dir / notebook_name
+
+                try:
+                    response = self.session.get(notebook_download_url, timeout=30)
+                    if response.status_code == 200:
+                        with open(notebook_file, 'wb') as f:
+                            f.write(response.content)
+                        print(f"  ✓ Notebook downloaded: {notebook_name}")
+                        downloaded_count += 1
+                        downloaded_something = True
+                    else:
+                        print(f"  ⚠ Could not download notebook (HTTP {response.status_code})")
+                except Exception as e:
+                    print(f"  ⚠ Error downloading notebook: {e}")
+
+                time.sleep(3)
+
+                # Find and download data files
+                data_files = self._find_lab_data_files()
+                print(f"  Found {len(data_files)} potential data file(s): {', '.join(sorted(data_files))}")
+
+                for data_filename in sorted(data_files):
+                    try:
+                        data_download_url = f"{base_lab_url}/lab/api/contents/{data_filename}"
+                        print(f"  ⬇ Downloading data file: {data_filename}")
+
+                        data_file = lab_dir / data_filename
+
+                        response = self.session.get(data_download_url, timeout=30)
+                        if response.status_code == 200:
+                            with open(data_file, 'wb') as f:
+                                f.write(response.content)
+                            print(f"  ✓ Data file downloaded: {data_filename}")
+                            downloaded_count += 1
+                            downloaded_something = True
+                        else:
+                            print(f"  ⚠ Could not download {data_filename} (HTTP {response.status_code})")
+                    except Exception as e:
+                        print(f"  ⚠ Error downloading {data_filename}: {e}")
+
+                # Save lab info
+                lab_info_file = lab_dir / "lab_info.txt"
+                with open(lab_info_file, 'w', encoding='utf-8') as f:
+                    f.write(f"Lab: {title}\n")
+                    f.write(f"URL: {current_url}\n")
+                    f.write(f"Notebook: {notebook_name}\n")
+                    f.write(f"\nData files found:\n")
+                    for df in sorted(data_files):
+                        f.write(f"  - {df}\n")
+                    f.write(f"\nNote: Download attempts were made for all files above.\n")
+                    f.write(f"Check the lab directory for successfully downloaded files.\n")
+
+                print(f"  ✓ Lab processing complete")
+
+        except Exception as e:
+            print(f"  ⚠ Error processing lab: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return downloaded_something, downloaded_count
+
+    def _find_lab_data_files(self) -> Set[str]:
+        """Find data files referenced in lab notebook."""
+        page_source = self.driver.page_source
+
+        file_patterns = [
+            r'["\']([^"\']+\.csv)["\']',
+            r'["\']([^"\']+\.txt)["\']',
+            r'["\']([^"\']+\.json)["\']',
+            r'["\']([^"\']+\.xlsx?)["\']',
+            r'["\']([^"\']+\.parquet)["\']',
+            r'["\']([^"\']+\.pkl)["\']',
+            r'["\']([^"\']+\.dat)["\']',
+            r'["\']([^"\']+\.h5)["\']',
+            r'["\']([^"\']+\.hdf5?)["\']',
+        ]
+
+        data_files = set()
+        for pattern in file_patterns:
+            matches = re.findall(pattern, page_source)
+            for match in matches:
+                if not any(x in match for x in ['http://', 'https://', '/usr/', '/opt/',
+                                                '/home/', '/var/', '/tmp/']):
+                    filename = match.split('/')[-1]
+                    if filename and len(filename) < 100 and '.' in filename:
+                        data_files.add(filename)
+
+        return data_files
+
+    def _process_course_item(self, item_url: str, module_dir: Path, item_counter: int,
+                           downloaded_files: Set[str]) -> int:
+        """Process a single course item and download its materials."""
+        materials_downloaded = 0
+
+        try:
+            print(f"\n  Navigating to item...")
+            self.driver.get(item_url)
+
+            # Wait for content to load
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.XPATH, "//main | //div[@role='main']"))
+                )
+                time.sleep(2)
+            except TimeoutException:
+                print(f"  ⚠ Timeout waiting for page content")
+                time.sleep(3)
+
+            item_type = self._determine_item_type(item_url)
+            title = self._get_item_title(item_url)
+
+            print(f"  📄 Item {item_counter}: {title} ({item_type})")
+
+            downloaded_something = False
+
+            # Process based on item type
+            if item_type == "video":
+                downloaded_something, count = self._process_video_item(module_dir, item_counter, title, item_url)
+                materials_downloaded += count
+
+            if item_type == "reading":
+                downloaded_something, count = self._process_reading_item(module_dir, item_counter, title, downloaded_files)
+                materials_downloaded += count
+
+            if item_type in ["quiz", "assignment"]:
+                downloaded_something, count = self._process_assignment_or_quiz(module_dir, item_counter, title, item_type)
+                materials_downloaded += count
+
+            if item_type == "lab":
+                downloaded_something, count = self._process_lab_item(module_dir, item_counter, title)
+                materials_downloaded += count
+
+            # Process PDFs (for all item types)
+            _, pdf_count = self._process_pdf_items(module_dir, item_counter, downloaded_files)
+            materials_downloaded += pdf_count
+
+            if not downloaded_something and item_type not in ["quiz", "assignment", "lab"]:
+                print(f"  ℹ No downloadable materials found")
+
+        except Exception as e:
+            print(f"  ⚠ Error processing item: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return materials_downloaded
+
+    def _process_module(self, course_url: str, course_slug: str, module_num: int,
+                       course_dir: Path, visited_urls: Set[str], downloaded_files: Set[str]) -> Tuple[int, int]:
+        """Process a single module and return (items_processed, materials_downloaded)."""
+        module_url = f"{course_url}/home/module/{module_num}"
+
+        print(f"\n{'─' * 60}")
+        print(f"📂 Checking Module {module_num}")
+        print(f"{'─' * 60}")
+
+        self.driver.get(module_url)
+        time.sleep(2)
+
+        # Check if module exists
+        if f"module/{module_num}" not in self.driver.current_url:
+            print(f"✓ No more modules found (attempted module {module_num})")
+            print(f"  Continuing to next course...")
+            return 0, 0
+
+        # Wait for content
+        self._wait_for_module_content()
+
+        # Extract items
+        item_links = self._extract_module_items()
+        print(f"  Found {len(item_links)} items in module {module_num}")
+
+        if len(item_links) == 0:
+            print(f"\n❌ ERROR: No items found in module {module_num}")
+            print(f"Current URL: {self.driver.current_url}")
+
+            debug_file = self.download_dir / f"debug_module_{module_num}_{course_slug}.html"
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                f.write(self.driver.page_source)
+
+            print(f"Page source saved to: {debug_file}")
+            print(f"Page title: {self.driver.title}")
+
+            raise Exception(f"No items found in module {module_num}. Page source saved for debugging.")
+
+        # Create module directory
+        module_dir = course_dir / f"Module_{module_num}"
+        module_dir.mkdir(exist_ok=True)
+
+        # Process each item
+        items_processed = 0
+        materials_downloaded = 0
+
+        for idx, item_url in enumerate(item_links, 1):
+            if item_url in visited_urls:
+                print(f"\n  [{idx}/{len(item_links)}] ⏭ Already processed, skipping...")
+                continue
+
+            visited_urls.add(item_url)
+            items_processed += 1
+
+            item_counter = len(visited_urls)
+            materials_count = self._process_course_item(item_url, module_dir, item_counter, downloaded_files)
+            materials_downloaded += materials_count
+
+        return items_processed, materials_downloaded
+
+    def get_course_content(self, course_url: str) -> int:
+        """Navigate through course and collect all downloadable materials."""
+        print(f"\n{'=' * 60}")
+        course_slug = course_url.split('/learn/')[-1].split('/')[0]
+        print(f"Processing course: {course_slug}")
+        print(f"{'=' * 60}")
+
+        course_dir = self.download_dir / self.sanitize_filename(course_slug)
+        course_dir.mkdir(exist_ok=True)
+
+        total_materials = 0
+        visited_urls = set()
+        downloaded_files = set()
+
+        try:
+            print("\nNavigating to course...")
+            self.driver.get(course_url)
+            time.sleep(5)
+
+            # Iterate through modules
+            for module_num in range(1, 21):
+                items_processed, materials_downloaded = self._process_module(
+                    course_url, course_slug, module_num, course_dir, visited_urls, downloaded_files
+                )
+
+                total_materials += materials_downloaded
+
+                if items_processed == 0:
+                    break
 
         except Exception as e:
             print(f"\n⚠ Error navigating course: {e}")
@@ -606,69 +848,21 @@ class CourseraDownloader:
 
         print(f"\n{'=' * 60}")
         print(f"✓ Course complete!")
-        print(f"  Items processed: {item_counter}")
-        print(f"  Materials downloaded: {materials_downloaded}")
+        print(f"  Items processed: {len(visited_urls)}")
+        print(f"  Materials downloaded: {total_materials}")
         print(f"{'=' * 60}")
 
-        if item_counter == 0:
+        if len(visited_urls) == 0:
             raise RuntimeError("No items found in course.")
 
-        return materials_downloaded
+        return total_materials
 
-    def download_vid(self, course_dir: Path, downloaded_something: bool, item_counter: int, item_url,
-                     materials_downloaded: int | Any, title: str | Any) -> tuple[int | Any, bool]:
-        video_elements = self.driver.find_elements(By.TAG_NAME, "video")
-        print(f"  Found {len(video_elements)} video element(s)")
-
-        for idx, video in enumerate(video_elements):
-            sources = [
-                video.get_attribute('src'),
-                *[source.get_attribute('src') for source in
-                  video.find_elements(By.TAG_NAME, 'source')]
-            ]
-
-            # Filter sources to get 720p if available
-            # Look for sources with quality indicators in URL
-            sources_720p = [s for s in sources if s and '720' in s]
-            if sources_720p:
-                sources = sources_720p
-            else:
-                # Fallback to all available sources
-                sources = [s for s in sources if s]
-
-            for video_src in sources:
-                if video_src:
-                    print(f"  Video source: {video_src[:80]}...")
-                    video_file = course_dir / f"{item_counter:03d}_{title}_{idx}.mp4"
-
-                    if not video_file.exists():
-                        print(f"  ⬇ Downloading video (720p preferred)...")
-                        try:
-                            if self.download_file(video_src, video_file):
-                                materials_downloaded += 1
-                                downloaded_something = True
-                                print(f"  ✓ Video saved: {video_file.name}")
-                            else:
-                                # Try with yt-dlp as fallback (with 720p format specification)
-                                print(f"  Trying alternative download method (720p)...")
-                                if self.download_video(item_url, video_file):
-                                    materials_downloaded += 1
-                                    downloaded_something = True
-                                    print(f"  ✓ Video saved: {video_file.name}")
-                        except Exception as e:
-                            print(f"  ⚠ Error downloading video: {e}")
-                    else:
-                        print(f"  ℹ Video already exists: {video_file.name}")
-                        downloaded_something = True
-        return downloaded_something, materials_downloaded
-
-    def download_certificate(self, cert_url):
+    def download_certificate(self, cert_url: str):
         """Download all courses from a professional certificate."""
         try:
             self.setup_driver()
             self.login_with_google()
 
-            # Get all courses in the certificate
             courses = [
                 "https://www.coursera.org/learn/foundations-of-data-science",
                 "https://www.coursera.org/learn/get-started-with-python",
@@ -723,11 +917,6 @@ def main():
         help="Professional certificate URL"
     )
     parser.add_argument(
-        "--course-urls",
-        nargs="+",
-        help="Manually specify individual course URLs (space-separated)"
-    )
-    parser.add_argument(
         "--output-dir",
         default="coursera_downloads",
         help="Output directory for downloads (default: coursera_downloads)"
@@ -744,10 +933,7 @@ def main():
     print("Coursera Material Downloader")
     print("=" * 60)
     print(f"Email: {args.email}")
-    if args.course_urls:
-        print(f"Courses: {len(args.course_urls)} course(s) specified")
-    else:
-        print(f"Certificate: {args.cert_url}")
+    print(f"Certificate: {args.cert_url}")
     print(f"Output directory: {args.output_dir}")
     print("=" * 60)
 

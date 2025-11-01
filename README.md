@@ -4,10 +4,14 @@ Automated script to download all course materials from your enrolled Coursera co
 
 ## Features
 
-- Downloads videos, PDFs, readings, and other course materials
+- Downloads videos (720p quality), PDFs, readings, and other course materials
+- Downloads assignments and quizzes (saves content as HTML)
+- Downloads Jupyter notebook labs including:
+  - Notebook files (.ipynb)
+  - All referenced data files (CSV, JSON, Excel, Parquet, etc.)
 - Supports Professional Certificates (multiple courses)
 - Google account authentication
-- Organized folder structure by course and week
+- Organized folder structure by course and module
 - Progress tracking
 
 ## Prerequisites
@@ -65,17 +69,24 @@ python coursera_scraper.py --email your.email@gmail.com --cert-url "https://www.
    - Iterates through modules (Module 1, 2, 3, etc.)
    - Extracts all item links from each module page
    - Downloads each item sequentially:
-     - Videos (MP4)
+     - Videos (MP4 in 720p quality)
      - PDFs and resources
-     - Reading materials (saved as HTML)
-5. **Organization**: Creates folder structure with numbered files:
+     - Reading materials with attachments (saved as HTML)
+     - Assignments and quizzes (saves content to HTML)
+     - Jupyter Labs (downloads .ipynb notebook + all data files)
+5. **Organization**: Creates folder structure with numbered files organized by module:
    ```
    coursera_downloads/
    ├── course-name-1/
-   │   ├── 001_Introduction_to_Course.mp4
-   │   ├── 002_Helpful_Resources.html
-   │   ├── 003_Course_Overview.html
-   │   ├── 004_Welcome_to_Module_1.mp4
+   │   ├── Module_1/
+   │   │   ├── 001_Introduction_to_Course.mp4
+   │   │   ├── 002_Helpful_Resources.html
+   │   │   ├── 003_Course_Overview_quiz.html
+   │   │   └── 004_Python_Lab_lab/
+   │   │       ├── notebook.ipynb
+   │   │       ├── data.csv
+   │   │       └── lab_info.txt
+   │   ├── Module_2/
    │   └── ...
    ├── course-name-2/
    └── ...
