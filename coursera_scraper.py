@@ -11,6 +11,7 @@ import pickle
 import zipfile
 import shutil
 import hashlib
+import json
 from pathlib import Path
 from typing import Set, Tuple
 
@@ -31,7 +32,17 @@ class CourseraDownloader:
         self.email = email
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(exist_ok=True)
+        
+        # Global shared assets for all courses
+        self.shared_assets_dir = self.download_dir / "shared_assets"
+        self.shared_assets_dir.mkdir(exist_ok=True)
+        (self.shared_assets_dir / "css").mkdir(exist_ok=True)
+        (self.shared_assets_dir / "images").mkdir(exist_ok=True)
+
         self.session = requests.Session()
+        self.image_cache_file = self.shared_assets_dir / "image_cache.json"
+        self.image_url_to_path = {}  # Cache to avoid re-downloading same URL in one session
+        self._load_image_cache()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Encoding": "gzip, deflate, br"
@@ -39,6 +50,26 @@ class CourseraDownloader:
         self.driver = None
         self.headless = headless
         self.cookies_file = self.download_dir / "coursera_cookies.pkl"
+
+    def _load_image_cache(self):
+        """Load the image URL to path cache from a file."""
+        try:
+            if self.image_cache_file.exists():
+                with open(self.image_cache_file, 'r', encoding='utf-8') as f:
+                    self.image_url_to_path = json.load(f)
+                print(f"✓ Loaded {len(self.image_url_to_path)} image cache entries.")
+        except (IOError, json.JSONDecodeError) as e:
+            print(f"⚠ Could not load image cache, starting fresh: {e}")
+            self.image_url_to_path = {}
+
+    def _save_image_cache(self):
+        """Save the image URL to path cache to a file."""
+        try:
+            with open(self.image_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.image_url_to_path, f, indent=4)
+            print(f"✓ Saved {len(self.image_url_to_path)} image cache entries.")
+        except IOError as e:
+            print(f"⚠ Could not save image cache: {e}")
 
     def setup_driver(self):
         """Initialize Selenium WebDriver with Chrome."""
@@ -611,12 +642,10 @@ class CourseraDownloader:
             css_links_html = ""
             if content:
                 # 1. Download CSS (shared for the course)
-                css_links_html = self._download_course_css(course_dir)
+                css_links_html = self._download_course_css()
 
                 # 2. Download Images within content
-                assets_dir_name = f"{item_counter:03d}_{title}_assets"
-                assets_dir = self._get_or_move_path(course_dir, module_dir, assets_dir_name)
-                downloaded_count += self._localize_images(content_elem, assets_dir, assets_dir_name)
+                downloaded_count += self._localize_images(content_elem)
                 
                 # Get updated content with local image paths
                 content = content_elem.get_attribute('innerHTML')
@@ -657,10 +686,11 @@ class CourseraDownloader:
 
         return downloaded_something, downloaded_count
 
-    def _download_course_css(self, course_dir: Path) -> str:
+    def _download_course_css(self) -> str:
         """Download all CSS files for the course and return HTML link tags."""
         css_links_html = ""
-        css_dir = course_dir / "shared_assets" / "css"
+        # Use global shared assets for deduplication across all courses
+        css_dir = self.shared_assets_dir / "css"
         css_dir.mkdir(parents=True, exist_ok=True)
         
         # 1. Capture external stylesheets
@@ -678,8 +708,8 @@ class CourseraDownloader:
                     
                     css_path = css_dir / css_filename
                     if self.download_file(href, css_path):
-                        # Path is relative to files in module_N/ directory
-                        css_links_html += f'    <link rel="stylesheet" href="../shared_assets/css/{css_filename}">\n'
+                        # Path is relative to files in module_N/ directory (two levels up to coursera_downloads)
+                        css_links_html += f'    <link rel="stylesheet" href="../../shared_assets/css/{css_filename}">\n'
                 except:
                     continue
         except:
@@ -703,7 +733,7 @@ class CourseraDownloader:
                         with open(css_path, 'w', encoding='utf-8') as f:
                             f.write(css_text)
                     
-                    css_links_html += f'    <link rel="stylesheet" href="../shared_assets/css/{css_filename}">\n'
+                    css_links_html += f'    <link rel="stylesheet" href="../../shared_assets/css/{css_filename}">\n'
                     inline_count += 1
                 except:
                     continue
@@ -714,29 +744,54 @@ class CourseraDownloader:
             
         return css_links_html
 
-    def _localize_images(self, content_elem, assets_dir: Path, assets_dir_name: str) -> int:
-        """Download images in content_elem and update their src to local paths."""
+    def _localize_images(self, content_elem) -> int:
+        """Download images in content_elem and update their src to global shared paths."""
         downloaded_count = 0
         try:
             images = content_elem.find_elements(By.TAG_NAME, "img")
             if images:
-                assets_dir.mkdir(exist_ok=True)
-                for idx, img in enumerate(images):
+                # Use global shared images for deduplication across all courses
+                global_images_dir = self.shared_assets_dir / "images"
+                
+                for img in images:
                     try:
                         src = img.get_attribute('src')
                         if not src or src.startswith('data:'): continue
                         
+                        if src in self.image_url_to_path:
+                            local_src = self.image_url_to_path[src]
+                            self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, local_src)
+                            continue
+
                         # Determine extension
                         ext = src.split('?')[0].split('.')[-1] if '.' in src.split('?')[0] else "png"
                         if len(ext) > 4 or not ext.isalnum(): ext = "png"
                         
-                        img_name = f"img_{idx:03d}.{ext}"
-                        img_path = assets_dir / img_name
+                        # Fetch the image to get its hash for deduplication
+                        try:
+                            response = self.session.get(src, timeout=20)
+                            response.raise_for_status()
+                            img_content = response.content
+                        except Exception as e:
+                            print(f"  ⚠ Failed to fetch image {src}: {e}")
+                            continue
+
+                        # Hash image content
+                        content_hash = hashlib.md5(img_content).hexdigest()
+                        img_name = f"{content_hash}.{ext}"
+                        img_path = global_images_dir / img_name
                         
-                        if self.download_file(src, img_path):
-                            # Update the DOM so the next get_attribute gets the local path
-                            self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, f"{assets_dir_name}/{img_name}")
+                        # Save if it doesn't exist
+                        if not img_path.exists():
+                            with open(img_path, 'wb') as f:
+                                f.write(img_content)
                             downloaded_count += 1
+                        
+                        # Update the DOM to point to global shared assets
+                        # HTML files are usually 2 levels deep from coursera_downloads (course/module/file.html)
+                        local_src = f"../../shared_assets/images/{img_name}"
+                        self.image_url_to_path[src] = local_src
+                        self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, local_src)
                     except:
                         continue
         except:
@@ -839,7 +894,7 @@ class CourseraDownloader:
                 continue
         return False
 
-    def _extract_assignment_content(self, assets_dir: Path = None, assets_dir_name: str = None) -> Tuple[str, int]:
+    def _extract_assignment_content(self) -> Tuple[str, int]:
         """Extract the HTML content of the assignment."""
         downloaded_count = 0
         selectors = [
@@ -862,7 +917,7 @@ class CourseraDownloader:
             """)
         except:
             pass
-
+        
         for selector in selectors:
             try:
                 # Find all matching elements and combine them if there are multiple (like questions)
@@ -870,9 +925,8 @@ class CourseraDownloader:
                 if elements:
                     content = ""
                     for elem in elements:
-                        # Localize images if assets_dir is provided
-                        if assets_dir and assets_dir_name:
-                            downloaded_count += self._localize_images(elem, assets_dir, assets_dir_name)
+                        # Localize images
+                        downloaded_count += self._localize_images(elem)
                             
                         html = elem.get_attribute('outerHTML')
                         if html and len(html) > 100:
@@ -1019,15 +1073,12 @@ class CourseraDownloader:
                 pass
 
             # Extract assignment content
-            assets_dir_name = f"{item_counter:03d}_{title}_{item_type}_assets"
-            assets_dir = self._get_or_move_path(course_dir, module_dir, assets_dir_name)
-            
-            assignment_content, image_count = self._extract_assignment_content(assets_dir, assets_dir_name)
+            assignment_content, image_count = self._extract_assignment_content()
             downloaded_count += image_count
 
             if assignment_content:
                 # Download CSS
-                css_links_html = self._download_course_css(course_dir)
+                css_links_html = self._download_course_css()
                 
                 filename = f"{item_counter:03d}_{title}_{item_type}.html"
                 assignment_file = self._get_or_move_path(course_dir, module_dir, filename)
@@ -1347,9 +1398,13 @@ class CourseraDownloader:
 
             # Wait for content to load
             try:
-                # Look for main content or article or specialized assignment containers
+                # Look for main content or article or specialized assignment containers or video
                 WebDriverWait(self.driver, 30).until(
-                    expected_conditions.presence_of_element_located((By.XPATH, "//main | //div[@role='main'] | //article | //div[@id='TUNNELVISIONWRAPPER_CONTENT_ID']"))
+                    expected_conditions.presence_of_element_located((By.XPATH, 
+                        "//main | //div[@role='main'] | //article | //div[@id='TUNNELVISIONWRAPPER_CONTENT_ID'] | " +
+                        "//video | //div[@class='rc-VideoItem'] | " +
+                        "//div[contains(@class, 'rc-FormPartsQuestion')] | //div[contains(@class, 'rc-CMLOrHTML')]"
+                    ))
                 )
                 time.sleep(2)
             except TimeoutException:
@@ -1534,6 +1589,7 @@ class CourseraDownloader:
             import traceback
             traceback.print_exc()
         finally:
+            self._save_image_cache()
             if self.driver:
                 print("\nClosing browser...")
                 self.driver.quit()
