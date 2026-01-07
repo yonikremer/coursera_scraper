@@ -623,6 +623,8 @@ class CourseraDownloader:
             # Get reading content
             content_elem = None
             content = None
+            selector_used = None
+            
             for selector in ["div[class*='rc-CML']", "div[class*='content']", "div[role='main']",
                            "article", "main"]:
                 try:
@@ -631,6 +633,7 @@ class CourseraDownloader:
                     if inner_html and len(inner_html) > 100:
                         content_elem = elem
                         content = inner_html
+                        selector_used = selector
                         break
                 except:
                     continue
@@ -640,15 +643,27 @@ class CourseraDownloader:
 
             # Process assets if content was found
             css_links_html = ""
-            if content:
+            if content and selector_used:
                 # 1. Download CSS (shared for the course)
                 css_links_html = self._download_course_css()
 
                 # 2. Download Images within content
-                downloaded_count += self._localize_images(content_elem)
+                # Re-find the element to ensure it's not stale after CSS download
+                try:
+                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector_used)
+                    downloaded_count += self._localize_images(content_elem)
+                except Exception as e:
+                    print(f"  ⚠ Error localizing images: {e}")
                 
                 # Get updated content with local image paths
-                content = content_elem.get_attribute('innerHTML')
+                try:
+                    # Re-find again just to be safe
+                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector_used)
+                    content = content_elem.get_attribute('innerHTML')
+                except Exception as e:
+                    print(f"  ⚠ Error getting final content: {e}")
+                    # Fallback to original content if update fails
+                    pass
 
                 # 3. Save HTML content
                 filename = f"{item_counter:03d}_{title}.html"
@@ -1403,7 +1418,8 @@ class CourseraDownloader:
                     expected_conditions.presence_of_element_located((By.XPATH, 
                         "//main | //div[@role='main'] | //article | //div[@id='TUNNELVISIONWRAPPER_CONTENT_ID'] | " +
                         "//video | //div[@class='rc-VideoItem'] | " +
-                        "//div[contains(@class, 'rc-FormPartsQuestion')] | //div[contains(@class, 'rc-CMLOrHTML')]"
+                        "//div[contains(@class, 'rc-FormPartsQuestion')] | //div[contains(@class, 'rc-CMLOrHTML')] | " +
+                        "//div[contains(@class, 'rc-CML')] | //div[contains(@class, 'ItemHeader')]"
                     ))
                 )
                 time.sleep(2)
