@@ -34,7 +34,7 @@ class CourseraDownloader:
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Encoding": "gzip, deflate"
+            "Accept-Encoding": "gzip, deflate, br"
         })
         self.driver = None
         self.headless = headless
@@ -204,100 +204,145 @@ class CourseraDownloader:
     @staticmethod
     def sanitize_filename(filename: str) -> str:
         """Remove invalid characters from filename, convert to lowercase with underscores."""
-        # Replace invalid characters with underscores
-        sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)
-        # Replace spaces with underscores
-        sanitized = sanitized.replace(' ', '_')
-        sanitized = sanitized.replace('-', '_')
+        # Replace invalid characters and punctuation with underscores
+        sanitized = re.sub(r'[<>:"/\\|?*,!]', '_', filename)
+        # Handle ellipsis and multiple dots (replace with single underscore)
+        sanitized = re.sub(r'\.{2,}', '_', sanitized)
+        # Replace spaces and hyphens with underscores
+        sanitized = sanitized.replace(' ', '_').replace('-', '_')
         # Convert to lowercase
         sanitized = sanitized.lower()
         # Remove multiple consecutive underscores
         sanitized = re.sub(r'_+', '_', sanitized)
-        return sanitized
+        # Strip leading/trailing underscores
+        sanitized = sanitized.strip('_')
+        return sanitized or "untitled"
 
     @staticmethod
-    def _get_or_move_file(course_dir: Path, module_dir: Path, filename: str) -> Path:
+    def _extract_slug(item_url: str) -> str:
+        """Extract a meaningful slug from Coursera URL."""
+        if not item_url:
+            return ""
+        # Remove query parameters
+        url = item_url.split('?')[0]
+        # Split by /
+        parts = [p for p in url.split('/') if p]
+        if not parts:
+            return ""
+        
+        # If it ends in /attempt, /submission, /view, etc., skip that part
+        if parts[-1].lower() in ['attempt', 'submission', 'view', 'instructions', 'gradedLab', 'ungradedLab']:
+            slug = parts[-2] if len(parts) >= 2 else parts[-1]
+        else:
+            slug = parts[-1]
+            
+        return CourseraDownloader.sanitize_filename(slug)
+
+    @staticmethod
+    def _get_or_move_path(course_dir: Path, module_dir: Path, target_name: str) -> Path:
         """
-        Check if a file exists in the course directory (from old runs), move it to the module directory.
-        Also handles renaming files from the old naming convention (spaces, mixed case) to new (lowercase, underscores).
-        If not found, return the module directory path for saving.
-
-        Args:
-            course_dir: The course root directory
-            module_dir: The module subdirectory
-            filename: The filename to check/save (should be already sanitized)
-
-        Returns:
-            Path object for the file in the module directory
+        Check if a file or directory exists in the course directory (from old runs), 
+        move it to the module directory.
+        Also handles fixing numbering prefixes and moving between modules.
         """
-        module_file = module_dir / filename
-        course_file = course_dir / filename
-
+        target_path = module_dir / target_name
+        
         # Ensure module directory exists
         module_dir.mkdir(exist_ok=True)
 
-        # If a file already exists in the module directory with the correct name, return it
-        if module_file.exists():
-            return module_file
+        # 1. If an item already exists in the module directory with the exact name, return it
+        if target_path.exists():
+            return target_path
 
-        # Check if a file exists in the course directory with the new naming
-        if course_file.exists():
-            print(f"  📦 Moving existing file to module directory: {filename}")
-            try:
-                # Move file from course root to the module directory
-                course_file.rename(module_file)
-                print(f"  ✓ Moved: {filename}")
-                return module_file
-            except Exception as e:
-                print(f"  ⚠ Error moving file: {e}")
+        # 2. Search for the item in all possible locations
+        # Locations: course root, current module, and all other module directories
+        search_dirs = [course_dir, module_dir]
+        if course_dir.exists():
+            search_dirs.extend([d for d in course_dir.glob("module_*") if d.is_dir()])
+        
+        # Unique resolved paths
+        unique_search_dirs = []
+        seen_resolved = set()
+        for sd in search_dirs:
+            if sd.exists():
+                res = sd.resolve()
+                if res not in seen_resolved:
+                    unique_search_dirs.append(sd)
+                    seen_resolved.add(res)
 
+        # 2.1. Check for exact name match in other directories
+        for sd in unique_search_dirs:
+            if sd.resolve() == module_dir.resolve(): continue
+            source_path = sd / target_name
+            if source_path.exists():
+                print(f"  📦 Moving existing item to module directory: {target_name} (from {sd.name})")
+                try:
+                    shutil.move(str(source_path), str(target_path))
+                    return target_path
+                except Exception as e:
+                    print(f"  ⚠ Error moving item: {e}")
 
-        return module_file
+        # 3. Fix numbering: check if item exists with a different number prefix
+        # target_name is expected to be like "035_title.ext" or "035_title_assets"
+        if len(target_name) > 4 and target_name[3] == '_':
+            suffix = target_name[4:]
+            for sd in unique_search_dirs:
+                # Look for items with any 3-digit prefix and the same suffix
+                for existing in sd.glob(f"[0-9][0-9][0-9]_{suffix}"):
+                    if existing.exists() and existing.resolve() != target_path.resolve():
+                        print(f"  🔄 Correcting item number/location: {existing.name} (in {sd.name}) → {target_name}")
+                        try:
+                            shutil.move(str(existing), str(target_path))
+                            return target_path
+                        except Exception as e:
+                            print(f"  ⚠ Error correcting item number for {existing.name}: {e}")
+
+        return target_path
 
     @staticmethod
     def _find_items(course_dir: Path, module_dir: Path, item_counter: int,
-                    item_type: str) -> list[Path]:
+                    item_type: str, item_url: str = None) -> list[Path]:
         """
-        Check if an item's materials already exist (either in module or course directory).
-        This allows skipping navigation to items that have already been downloaded.
-
-        Args:
-            course_dir: The course root directory
-            module_dir: The module subdirectory
-            item_counter: The item number
-            item_type: Type of item (video, reading, quiz, assignment, lab)
-
-        Returns:
-            True if the item likely exists, False otherwise
+        Check if an item's materials already exist across any module or course directory.
+        Relies on slug-based matching to handle re-ordering accurately and avoid prefix hijacking.
         """
-        # Create the pattern for the item counter-prefix
         prefix = f"{item_counter:03d}_"
+        all_found = []
+        
+        # Get all directories to search (all modules + course root)
+        search_dirs = [module_dir, course_dir]
+        if course_dir.exists():
+            search_dirs.extend([d for d in course_dir.glob("module_*") if d.is_dir()])
+        
+        # Resolve to unique paths
+        unique_search_dirs = []
+        seen_resolved = set()
+        for sd in search_dirs:
+            if sd.exists():
+                res = sd.resolve()
+                if res not in seen_resolved:
+                    unique_search_dirs.append(sd)
+                    seen_resolved.add(res)
 
-        # Check the module directory first
-        if module_dir.exists():
-            files_in_module = list(module_dir.glob(f"{prefix}*"))
-            if files_in_module:
-                # Found files with this counter in the module directory
-                return files_in_module
+        # 1. Primary Search: Match by slug (best for identifying moved items)
+        if item_url:
+            slug = CourseraDownloader._extract_slug(item_url)
+            if slug:
+                for directory in unique_search_dirs:
+                    # Match any 3-digit prefix followed by our slug
+                    slug_matches = list(directory.glob(f"[0-9][0-9][0-9]_{slug}*"))
+                    all_found.extend(slug_matches)
 
-        # Check course root directory for old structure
-        files_in_course = list(course_dir.glob(f"{prefix}*"))
-        if files_in_course:
-            # Found files with this counter in course root
-            return files_in_course
+        # Remove duplicates and resolve to actual paths
+        unique_found = []
+        seen_paths = set()
+        for p in all_found:
+            resolved_p = str(p.resolve())
+            if resolved_p not in seen_paths:
+                unique_found.append(p)
+                seen_paths.add(resolved_p)
 
-        # For labs, check if the lab directory exists
-        if item_type == "lab":
-            # Lab directories have a pattern: NNN_title_lab/
-            lab_dirs_module = list(module_dir.glob(f"{prefix}*_lab"))
-            if lab_dirs_module and any(d.is_dir() for d in lab_dirs_module):
-                return files_in_course
-
-            lab_dirs_course = list(course_dir.glob(f"{prefix}*_lab"))
-            if lab_dirs_course and any(d.is_dir() for d in lab_dirs_course):
-                return lab_dirs_course
-
-        return []
+        return unique_found
 
     def download_file(self, url: str, filepath: Path) -> bool:
         """Download a file from URL."""
@@ -448,7 +493,7 @@ class CourseraDownloader:
                     if video_src:
                         print(f"  Video source: {video_src[:80]}...")
                         filename = f"{item_counter:03d}_{title}_{idx}.mp4"
-                        video_file = self._get_or_move_file(course_dir, module_dir, filename)
+                        video_file = self._get_or_move_path(course_dir, module_dir, filename)
 
                         if not video_file.exists():
                             print(f"  ⬇ Downloading video (720p preferred)...")
@@ -479,7 +524,7 @@ class CourseraDownloader:
                     href = href.replace("full/540p", "full/720p")
                     print(f"  Found download link: {href[:80]}...")
                     filename = f"{item_counter:03d}_{title}.mp4"
-                    video_file = self._get_or_move_file(course_dir, module_dir, filename)
+                    video_file = self._get_or_move_path(course_dir, module_dir, filename)
                     if not video_file.exists():
                         if self.download_file(href, video_file):
                             downloaded_count += 1
@@ -523,7 +568,7 @@ class CourseraDownloader:
                         base_filename += '.pdf'
 
                     filename = f"{item_counter:03d}_{base_filename}"
-                    pdf_file = self._get_or_move_file(course_dir, module_dir, filename)
+                    pdf_file = self._get_or_move_path(course_dir, module_dir, filename)
 
                     if not pdf_file.exists():
                         print(f"  ⬇ Downloading PDF: {base_filename}")
@@ -570,7 +615,7 @@ class CourseraDownloader:
 
                 # 2. Download Images within content
                 assets_dir_name = f"{item_counter:03d}_{title}_assets"
-                assets_dir = module_dir / assets_dir_name
+                assets_dir = self._get_or_move_path(course_dir, module_dir, assets_dir_name)
                 downloaded_count += self._localize_images(content_elem, assets_dir, assets_dir_name)
                 
                 # Get updated content with local image paths
@@ -578,7 +623,7 @@ class CourseraDownloader:
 
                 # 3. Save HTML content
                 filename = f"{item_counter:03d}_{title}.html"
-                html_file = self._get_or_move_file(course_dir, module_dir, filename)
+                html_file = self._get_or_move_path(course_dir, module_dir, filename)
                 with open(html_file, 'w', encoding='utf-8') as f:
                     f.write(f"""<!DOCTYPE html>
 <html>
@@ -755,7 +800,7 @@ class CourseraDownloader:
                         attach_name = f"{attach_name}.{extension}"
 
                     filename = f"{item_counter:03d}_attachment_{attach_name}"
-                    attach_file = self._get_or_move_file(course_dir, module_dir, filename)
+                    attach_file = self._get_or_move_path(course_dir, module_dir, filename)
 
                     if not attach_file.exists():
                         print(f"  ⬇ Downloading attachment: {attach_name}")
@@ -932,7 +977,7 @@ class CourseraDownloader:
 
             # Extract assignment content
             assets_dir_name = f"{item_counter:03d}_{title}_{item_type}_assets"
-            assets_dir = module_dir / assets_dir_name
+            assets_dir = self._get_or_move_path(course_dir, module_dir, assets_dir_name)
             
             assignment_content, image_count = self._extract_assignment_content(assets_dir, assets_dir_name)
             downloaded_count += image_count
@@ -942,7 +987,7 @@ class CourseraDownloader:
                 css_links_html = self._download_course_css(course_dir)
                 
                 filename = f"{item_counter:03d}_{title}_{item_type}.html"
-                assignment_file = self._get_or_move_file(course_dir, module_dir, filename)
+                assignment_file = self._get_or_move_path(course_dir, module_dir, filename)
                 
                 # Save to HTML file
                 self._save_assignment_html(assignment_file, title, item_type, assignment_content, css_links_html, metadata)
@@ -1031,41 +1076,9 @@ class CourseraDownloader:
                     self.driver.switch_to.window(original_window)
                 return downloaded_something, downloaded_count
 
-            # Check if lab directory exists in old location (course root) or with old naming
+            # Check if lab directory exists in old location or with different numbering
             lab_dir_name = f"{item_counter:03d}_{title}_lab"
-            old_lab_dir = course_dir / lab_dir_name
-            lab_dir = module_dir / lab_dir_name
-
-            # Check if lab directory already exists with correct name
-            if lab_dir.exists() and lab_dir.is_dir():
-                print(f"  ℹ Lab directory already exists: {lab_dir_name}")
-            else:
-                # Try to find lab directory with new naming in course root (flat structure)
-                if old_lab_dir.exists() and old_lab_dir.is_dir():
-                    print(f"  📦 Moving existing lab directory to module directory")
-                    try:
-                        module_dir.mkdir(exist_ok=True)
-                        shutil.move(str(old_lab_dir), str(lab_dir))
-                        print(f"  ✓ Moved lab directory")
-                    except Exception as e:
-                        print(f"  ⚠ Error moving lab directory: {e}")
-                else:
-                    # Try to find lab directory with old naming convention (spaces, mixed case)
-                    counter_prefix = f"{item_counter:03d}_"
-                    for directory in [module_dir, course_dir]:
-                        if directory.exists():
-                            # Find directories that start with the counter and end with _lab
-                            for old_dir in directory.glob(f"{counter_prefix}*_lab"):
-                                if old_dir.is_dir() and old_dir.name.lower() == lab_dir_name.lower() and old_dir.name != lab_dir_name:
-                                    # Found lab directory with old naming - move and rename it
-                                    print(f"  📦 Moving and renaming lab directory: {old_dir.name} → {lab_dir_name}")
-                                    try:
-                                        module_dir.mkdir(exist_ok=True)
-                                        shutil.move(str(old_dir), str(lab_dir))
-                                        print(f"  ✓ Renamed and moved lab directory")
-                                        break
-                                    except Exception as e:
-                                        print(f"  ⚠ Error renaming lab directory: {e}")
+            lab_dir = self._get_or_move_path(course_dir, module_dir, lab_dir_name)
 
             # Create lab directory if it still doesn't exist
             lab_dir.mkdir(exist_ok=True)
@@ -1250,18 +1263,26 @@ class CourseraDownloader:
             # Determine item type from URL (before navigating)
             item_type = self._determine_item_type(item_url)
 
-            existing_items = self._find_items(course_dir, module_dir, item_counter, item_type)
+            existing_items = self._find_items(course_dir, module_dir, item_counter, item_type, item_url)
 
             # Check if an item already exists before navigating
             if len(existing_items) > 0:
                 print(f"\n  [{item_counter}] ✓ Item materials already exist, skipping navigation")
-                # Still need to move files if they're in the old location,
-                print(f"found existing items: {existing_items}")
+                
+                # Check if we need to rename any found items to the correct prefix
                 for item in existing_items:
-                    # move the file to the module directory and sanitize the file name
-                    print(f"moving item: {item}")
-                    item_file = self._get_or_move_file(course_dir, module_dir, item.name)
-                    downloaded_files.add(item_file)
+                    # If it has a prefix but it's the wrong one, rename it
+                    if len(item.name) > 4 and item.name[3] == '_' and not item.name.startswith(f"{item_counter:03d}_"):
+                        # Construct the target filename with the correct prefix
+                        target_filename = f"{item_counter:03d}_{item.name[4:]}"
+                        # _get_or_move_path handles the actual move/rename and prefix correction
+                        item_file = self._get_or_move_path(course_dir, module_dir, target_filename)
+                        downloaded_files.add(item_file)
+                    else:
+                        # Exact match or already corrected
+                        item_file = self._get_or_move_path(course_dir, module_dir, item.name)
+                        downloaded_files.add(item_file)
+                    
                     materials_downloaded += 1
                 return 0  # Return 0 since we're not downloading anything new
 
