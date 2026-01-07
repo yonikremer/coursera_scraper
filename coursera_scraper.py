@@ -902,6 +902,49 @@ class CourseraDownloader:
         hr {{ border: 0; border-top: 1px solid #eee; margin: 40px 0; }}
         h1 {{ font-size: 32px; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-bottom: 16px; }}
         .assignment-content {{ margin-top: 20px; }}
+        
+        /* Quiz/Assignment layout fixes */
+        .rc-FormPartsQuestion {{ margin-bottom: 30px; padding: 20px; background: #fdfdfd; border: 1px solid #eee; border-radius: 8px; }}
+        .rc-Option {{ margin: 5px 0; position: relative; }}
+        .rc-Option label {{ 
+            display: flex !important; 
+            align-items: flex-start !important; 
+            cursor: pointer; 
+            gap: 10px; 
+            padding: 10px; 
+            border-radius: 6px; 
+            transition: background 0.2s; 
+            position: relative; 
+        }}
+        .rc-Option label:hover {{ background: #f5f5f5; }}
+        
+        /* Hide native radio/checkbox but keep it clickable and functional */
+        .rc-Option input[type="radio"], 
+        .rc-Option input[type="checkbox"] {{ 
+            opacity: 0;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 5;
+            cursor: pointer;
+            margin: 0;
+        }}
+
+        /* Highlight selected option */
+        .rc-Option:has(input:checked) label {{
+            background-color: #e8f0fe;
+        }}
+        .rc-Option input:checked + span {{
+            color: #1a73e8;
+            font-weight: 600;
+        }}
+
+        /* Ensure Coursera's custom icons and text are aligned */
+        ._1e7axzp, .cui-icon, ._htmk7zm + span {{ display: flex; align-items: center; justify-content: center; flex-shrink: 0; }}
+        .rc-Option label span {{ line-height: 1.5; }}
+        #TUNNELVISIONWRAPPER_CONTENT_ID {{ padding: 0 !important; margin: 0 !important; }}
     </style>
 </head>
 <body>
@@ -1172,6 +1215,10 @@ class CourseraDownloader:
                     if work_dir.exists():
                         print(f"  📁 Moving files from work directory to lab directory...")
                         for item in work_dir.iterdir():
+                            # Skip Jupyter checkpoints
+                            if item.name == '.ipynb_checkpoints':
+                                continue
+
                             dest = lab_dir / item.name
                             if dest.exists():
                                 print(f"    ℹ Skipping existing: {item.name}")
@@ -1198,6 +1245,15 @@ class CourseraDownloader:
                     # Delete the zip file
                     zip_file.unlink()
                     print(f"  ✓ Deleted Files.zip")
+
+                    # Recursive cleanup of any .ipynb_checkpoints that might have been extracted
+                    for checkpoint_dir in lab_dir.rglob(".ipynb_checkpoints"):
+                        if checkpoint_dir.is_dir():
+                            try:
+                                shutil.rmtree(checkpoint_dir)
+                                print(f"  ✓ Removed checkpoint directory: {checkpoint_dir.name}")
+                            except Exception as e:
+                                print(f"  ⚠ Could not remove checkpoint directory {checkpoint_dir}: {e}")
 
                     # Save lab info
                     lab_info_file = lab_dir / "lab_info.txt"

@@ -161,31 +161,31 @@ The method is called from all material processing functions:
 1. **Videos**: `_process_video_item()`
    ```python
    filename = f"{item_counter:03d}_{title}_{idx}.mp4"
-   video_file = self._get_or_move_file(course_dir, module_dir, filename)
+   video_file = self._get_or_move_path(course_dir, module_dir, filename)
    ```
 
 2. **PDFs**: `_process_pdf_items()`
    ```python
    filename = f"{item_counter:03d}_{base_filename}"
-   pdf_file = self._get_or_move_file(course_dir, module_dir, filename)
+   pdf_file = self._get_or_move_path(course_dir, module_dir, filename)
    ```
 
 3. **Readings**: `_process_reading_item()`
    ```python
    filename = f"{item_counter:03d}_{title}.html"
-   html_file = self._get_or_move_file(course_dir, module_dir, filename)
+   html_file = self._get_or_move_path(course_dir, module_dir, filename)
    ```
 
 4. **Attachments**: `_download_attachments()`
    ```python
    filename = f"{item_counter:03d}_attachment_{attach_name}"
-   attach_file = self._get_or_move_file(course_dir, module_dir, filename)
+   attach_file = self._get_or_move_path(course_dir, module_dir, filename)
    ```
 
 5. **Assignments/Quizzes**: `_process_assignment_or_quiz()`
    ```python
    filename = f"{item_counter:03d}_{title}_{item_type}.html"
-   assignment_file = self._get_or_move_file(course_dir, module_dir, filename)
+   assignment_file = self._get_or_move_path(course_dir, module_dir, filename)
    ```
 
 6. **Labs**: `_process_lab_item()` (uses `shutil.move` for entire directory)
