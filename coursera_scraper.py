@@ -10,6 +10,7 @@ import warnings
 import pickle
 import zipfile
 import shutil
+import hashlib
 from pathlib import Path
 from typing import Set, Tuple
 
@@ -31,6 +32,10 @@ class CourseraDownloader:
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(exist_ok=True)
         self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Encoding": "gzip, deflate"
+        })
         self.driver = None
         self.headless = headless
         self.cookies_file = self.download_dir / "coursera_cookies.pkl"
@@ -306,9 +311,14 @@ class CourseraDownloader:
 
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            # For small files (not videos), we can just use response.content to ensure proper decompression
+            if filepath.suffix.lower() not in ['.mp4', '.zip']:
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+            else:
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
 
             return True
         except Exception as e:
@@ -346,17 +356,19 @@ class CourseraDownloader:
             print(f"  ⚠ Error downloading video: {e}")
             return False
 
-    def _wait_for_module_content(self):
+    def _wait_for_module_content(self, module_num: int):
         """Wait for module content to load."""
-        print(f"  Waiting for module content to load...")
+        print(f"  Waiting for module {module_num} content to load...")
         try:
-            WebDriverWait(self.driver, 30).until(
-                expected_conditions.presence_of_element_located((By.XPATH, "//ul[@data-testid='named-item-list-list']//a"))
+            # Look for either the item list or a message saying no items
+            WebDriverWait(self.driver, 45).until(
+                lambda d: d.find_elements(By.XPATH, "//ul[@data-testid='named-item-list-list']//a") or 
+                         "No items found" in d.page_source
             )
-            print(f"  ✓ Module content loaded")
+            print(f"  ✓ Module {module_num} content loaded")
             time.sleep(2)
         except TimeoutException:
-            print(f"  ⚠ Timeout waiting for module content to load")
+            print(f"  ⚠ Timeout waiting for module {module_num} content to load")
 
     def _extract_module_items(self) -> list:
         """Extract all item links from the current module page."""
@@ -364,6 +376,7 @@ class CourseraDownloader:
             "//ul[@data-testid='named-item-list-list']//a[contains(@href, '/lecture/') or " +
             "contains(@href, '/supplement/') or contains(@href, '/quiz/') or " +
             "contains(@href, '/exam/') or contains(@href, '/assignment/') or " +
+            "contains(@href, '/assignment-submission/') or " +
             "contains(@href, '/programming/') or contains(@href, '/ungradedLab/') or " +
             "contains(@href, '/gradedLab/')]")
 
@@ -384,7 +397,7 @@ class CourseraDownloader:
             return "reading"
         elif '/quiz/' in item_url or '/exam/' in item_url:
             return "quiz"
-        elif '/assignment/' in item_url or '/programming/' in item_url:
+        elif '/assignment/' in item_url or '/programming/' in item_url or '/assignment-submission/' in item_url:
             return "assignment"
         elif '/ungradedLab/' in item_url or '/gradedLab/' in item_url:
             return "lab"
@@ -532,13 +545,16 @@ class CourseraDownloader:
 
         try:
             # Get reading content
+            content_elem = None
             content = None
             for selector in ["div[class*='rc-CML']", "div[class*='content']", "div[role='main']",
                            "article", "main"]:
                 try:
-                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    content = content_elem.get_attribute('innerHTML')
-                    if content and len(content) > 100:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    inner_html = elem.get_attribute('innerHTML')
+                    if inner_html and len(inner_html) > 100:
+                        content_elem = elem
+                        content = inner_html
                         break
                 except:
                     continue
@@ -546,8 +562,21 @@ class CourseraDownloader:
             # Download attachments
             downloaded_count += self._download_attachments(course_dir, module_dir, item_counter, downloaded_files)
 
-            # Save HTML content
+            # Process assets if content was found
+            css_links_html = ""
             if content:
+                # 1. Download CSS (shared for the course)
+                css_links_html = self._download_course_css(course_dir)
+
+                # 2. Download Images within content
+                assets_dir_name = f"{item_counter:03d}_{title}_assets"
+                assets_dir = module_dir / assets_dir_name
+                downloaded_count += self._localize_images(content_elem, assets_dir, assets_dir_name)
+                
+                # Get updated content with local image paths
+                content = content_elem.get_attribute('innerHTML')
+
+                # 3. Save HTML content
                 filename = f"{item_counter:03d}_{title}.html"
                 html_file = self._get_or_move_file(course_dir, module_dir, filename)
                 with open(html_file, 'w', encoding='utf-8') as f:
@@ -556,27 +585,118 @@ class CourseraDownloader:
 <head>
     <meta charset="utf-8">
     <title>{title}</title>
+{css_links_html}
     <style>
-        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-        img {{ max-width: 100%; height: auto; }}
-        code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }}
-        pre {{ background: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 30px; line-height: 1.6; background: #fff; color: #1f1f1f; }}
+        img {{ max-width: 100%; height: auto; display: block; margin: 25px auto; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+        code {{ background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 85%; }}
+        pre {{ background: #f5f5f5; padding: 16px; border-radius: 6px; overflow-x: auto; line-height: 1.45; margin-bottom: 20px; }}
+        h1 {{ font-size: 32px; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-bottom: 16px; }}
+        .content-wrapper {{ margin-top: 20px; }}
     </style>
 </head>
 <body>
     <h1>{title}</h1>
-    {content}
+    <div class="content-wrapper">
+        {content}
+    </div>
 </body>
 </html>""")
 
                 downloaded_count += 1
                 downloaded_something = True
-                print(f"  ✓ Reading saved as HTML")
+                print(f"  ✓ Reading saved as HTML with assets")
 
         except Exception as e:
             print(f"  ⚠ Could not save reading: {e}")
 
         return downloaded_something, downloaded_count
+
+    def _download_course_css(self, course_dir: Path) -> str:
+        """Download all CSS files for the course and return HTML link tags."""
+        css_links_html = ""
+        css_dir = course_dir / "shared_assets" / "css"
+        css_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 1. Capture external stylesheets
+        try:
+            css_elements = self.driver.find_elements(By.XPATH, "//link[@rel='stylesheet']")
+            for idx, link in enumerate(css_elements):
+                try:
+                    href = link.get_attribute('href')
+                    if not href or not href.startswith('http'): continue
+                    
+                    css_filename = self.sanitize_filename(href.split('/')[-1].split('?')[0])
+                    if not css_filename.endswith('.css'): css_filename += ".css"
+                    if len(css_filename) > 100 or len(css_filename) < 5: 
+                        css_filename = f"style_{hashlib.md5(href.encode()).hexdigest()[:10]}.css"
+                    
+                    css_path = css_dir / css_filename
+                    if self.download_file(href, css_path):
+                        # Path is relative to files in module_N/ directory
+                        css_links_html += f'    <link rel="stylesheet" href="../shared_assets/css/{css_filename}">\n'
+                except:
+                    continue
+        except:
+            pass
+
+        # 2. Capture inline styles
+        try:
+            style_elements = self.driver.find_elements(By.TAG_NAME, "style")
+            inline_count = 0
+            for idx, style in enumerate(style_elements):
+                try:
+                    css_text = style.get_attribute('innerHTML')
+                    if not css_text or len(css_text.strip()) < 20: continue
+                    
+                    # Hash the content to avoid duplicates across pages
+                    content_hash = hashlib.md5(css_text.encode('utf-8', errors='ignore')).hexdigest()
+                    css_filename = f"inline_{content_hash[:12]}.css"
+                    css_path = css_dir / css_filename
+                    
+                    if not css_path.exists():
+                        with open(css_path, 'w', encoding='utf-8') as f:
+                            f.write(css_text)
+                    
+                    css_links_html += f'    <link rel="stylesheet" href="../shared_assets/css/{css_filename}">\n'
+                    inline_count += 1
+                except:
+                    continue
+            if inline_count > 0:
+                print(f"  ✓ Captured {inline_count} inline style(s)")
+        except:
+            pass
+            
+        return css_links_html
+
+    def _localize_images(self, content_elem, assets_dir: Path, assets_dir_name: str) -> int:
+        """Download images in content_elem and update their src to local paths."""
+        downloaded_count = 0
+        try:
+            images = content_elem.find_elements(By.TAG_NAME, "img")
+            if images:
+                assets_dir.mkdir(exist_ok=True)
+                for idx, img in enumerate(images):
+                    try:
+                        src = img.get_attribute('src')
+                        if not src or src.startswith('data:'): continue
+                        
+                        # Determine extension
+                        ext = src.split('?')[0].split('.')[-1] if '.' in src.split('?')[0] else "png"
+                        if len(ext) > 4 or not ext.isalnum(): ext = "png"
+                        
+                        img_name = f"img_{idx:03d}.{ext}"
+                        img_path = assets_dir / img_name
+                        
+                        if self.download_file(src, img_path):
+                            # Update the DOM so the next get_attribute gets the local path
+                            self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, f"{assets_dir_name}/{img_name}")
+                            downloaded_count += 1
+                    except:
+                        continue
+        except:
+            pass
+        return downloaded_count
 
     def _download_attachments(self, course_dir: Path, module_dir: Path, item_counter: int,
                              downloaded_files: Set[str]) -> int:
@@ -584,14 +704,21 @@ class CourseraDownloader:
         downloaded_count = 0
 
         try:
-            attachment_links = self.driver.find_elements(By.XPATH,
-                "//a[@data-e2e='asset-download-link'] | " +
-                "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'cloudfront.net')]")
+            # Expanded selectors for better coverage of attachments
+            selectors = [
+                "//a[@data-e2e='asset-download-link']",
+                "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'cloudfront.net')]",
+                "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'coursera-university-assets')]",
+                "//a[contains(@href, 'api.coursera.org/api/asset/v1/')]",
+                "//a[contains(@class, 'download-link')]",
+                "//div[contains(@class, 'resource')]//a"
+            ]
+            attachment_links = self.driver.find_elements(By.XPATH, " | ".join(selectors))
 
             for attach_link in attachment_links:
                 try:
                     attach_url = attach_link.get_attribute('href')
-                    if not attach_url or attach_url in downloaded_files:
+                    if not attach_url or attach_url in downloaded_files or not attach_url.startswith('http'):
                         continue
 
                     downloaded_files.add(attach_url)
@@ -645,6 +772,117 @@ class CourseraDownloader:
 
         return downloaded_count
 
+    def _click_assignment_start_button(self) -> bool:
+        """Click the start/resume button for an assignment or quiz."""
+        # Common Coursera button texts for starting assignments/quizzes
+        button_texts = ["Start", "Start Assignment", "Resume", "Continue", "Start Quiz", "Retake Quiz", "Review", "Open", "Launch"]
+        
+        for btn_text in button_texts:
+            try:
+                # Try to find button or link with the text
+                xpath = f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]"
+                start_btn = self.driver.find_element(By.XPATH, xpath)
+                
+                if start_btn.is_displayed() and start_btn.is_enabled():
+                    # Scroll into view to ensure it's clickable
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_btn)
+                    time.sleep(1)
+                    start_btn.click()
+                    print(f"  ✓ Clicked '{btn_text}' button")
+                    return True
+            except:
+                continue
+        return False
+
+    def _extract_assignment_content(self, assets_dir: Path = None, assets_dir_name: str = None) -> Tuple[str, int]:
+        """Extract the HTML content of the assignment."""
+        downloaded_count = 0
+        selectors = [
+            "div#TUNNELVISIONWRAPPER_CONTENT_ID",
+            "div.rc-FormPartsQuestion", 
+            "div.rc-CMLOrHTML", 
+            "div[data-testid^='part-Submission']",
+            ".rc-AssignmentPart", 
+            ".rc-PracticeAssignment",
+            "form",
+            "div[role='main']", 
+            "main"
+        ]
+        
+        # Try to remove AI instructions if present before extracting
+        try:
+            self.driver.execute_script("""
+                const aiInstructions = document.querySelectorAll('[data-ai-instructions="true"]');
+                aiInstructions.forEach(el => el.remove());
+            """)
+        except:
+            pass
+
+        for selector in selectors:
+            try:
+                # Find all matching elements and combine them if there are multiple (like questions)
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements:
+                    content = ""
+                    for elem in elements:
+                        # Localize images if assets_dir is provided
+                        if assets_dir and assets_dir_name:
+                            downloaded_count += self._localize_images(elem, assets_dir, assets_dir_name)
+                            
+                        html = elem.get_attribute('outerHTML')
+                        if html and len(html) > 100:
+                            content += html + "\n<br>\n"
+                    if content:
+                        return content, downloaded_count
+            except:
+                continue
+        return "", 0
+
+    def _save_assignment_html(self, filepath: Path, title: str, item_type: str, content: str, css_links_html: str = "", metadata: str = ""):
+        """Save assignment content to an HTML file."""
+        metadata_html = f"<p><strong>Info:</strong> {metadata}</p>" if metadata else ""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{title}</title>
+{css_links_html}
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 30px; line-height: 1.6; color: #1f1f1f; background: #fff; }}
+        img {{ max-width: 100%; height: auto; display: block; margin: 25px auto; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+        code {{ background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 85%; }}
+        pre {{ background: #f5f5f5; padding: 16px; border-radius: 6px; overflow-x: auto; line-height: 1.45; margin-bottom: 20px; }}
+        .question {{ margin: 20px 0; padding: 20px; background: #f9f9f9; border-left: 5px solid #007bff; border-radius: 4px; }}
+        hr {{ border: 0; border-top: 1px solid #eee; margin: 40px 0; }}
+        h1 {{ font-size: 32px; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-bottom: 16px; }}
+        .assignment-content {{ margin-top: 20px; }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    <p><strong>Type:</strong> {item_type.title()}</p>
+    {metadata_html}
+    <p><strong>URL:</strong> {self.driver.current_url}</p>
+    <hr>
+    <div class="assignment-content">
+        {content}
+    </div>
+</body>
+</html>""")
+
+    def _click_save_draft_button(self):
+        """Try to click 'Save draft' button if it exists."""
+        try:
+            save_btn = self.driver.find_element(By.XPATH,
+                "//button[contains(., 'Save draft') or contains(., 'Save Draft')]")
+            if save_btn.is_displayed() and save_btn.is_enabled():
+                save_btn.click()
+                print(f"  ✓ Clicked 'Save draft'")
+                time.sleep(2)
+        except:
+            pass
+
     def _process_assignment_or_quiz(self, course_dir: Path, module_dir: Path, item_counter: int,
                                     title: str, item_type: str) -> Tuple[bool, int]:
         """Process and save assignment or quiz content."""
@@ -654,88 +892,69 @@ class CourseraDownloader:
         try:
             print(f"  Processing {item_type}...")
 
-            # Navigate to the attempt page
-            if '/attempt' not in self.driver.current_url:
-                start_clicked = False
-                for btn_text in ["Start Assignment", "Resume", "Continue", "Start Quiz", "Retake Quiz", "Review"]:
-                    try:
-                        start_btn = self.driver.find_element(By.XPATH,
-                            f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]")
-                        if start_btn.is_displayed() and start_btn.is_enabled():
-                            start_btn.click()
-                            print(f"  ✓ Clicked '{btn_text}'")
-                            time.sleep(4)
-                            start_clicked = True
-                            break
-                    except:
-                        continue
+            # If it's an assignment-submission or not yet on attempt page, try to click start
+            # Special case for 'assignment-submission' as requested: it often has a start button 
+            # that doesn't change the URL.
+            is_attempt_page = '/attempt' in self.driver.current_url or '/assignment-submission' in self.driver.current_url
+            
+            # Try clicking start button if we're not on a known attempt page, 
+            # or if we are on a submission page that might need a click to show the actual assignment.
+            if not is_attempt_page or '/assignment-submission' in self.driver.current_url:
+                if self._click_assignment_start_button():
+                    time.sleep(4)
+                elif not is_attempt_page:
+                    print(f"  ℹ Already on assignment page or no start button found")
 
-                if not start_clicked:
-                    print(f"  ℹ Already on assignment/quiz page or no start button found")
-
-            # Wait for attempt page
+            # Wait for content to load
+            print(f"  Waiting for {item_type} content...")
             try:
-                WebDriverWait(self.driver, 10).until(
-                    lambda d: '/attempt' in d.current_url or
-                             d.find_element(By.CSS_SELECTOR, "div.rc-FormPartsQuestion, form, div.rc-CMLOrHTML")
+                WebDriverWait(self.driver, 30).until(
+                    lambda d: '/attempt' in d.current_url or 
+                             d.find_elements(By.CSS_SELECTOR, "div#TUNNELVISIONWRAPPER_CONTENT_ID, div.rc-FormPartsQuestion, form, div.rc-CMLOrHTML, .rc-AssignmentPart, .rc-PracticeAssignment, div[data-testid^='part-Submission'], [data-testid='header-right']")
                 )
                 time.sleep(2)
-            except:
-                pass
+            except TimeoutException:
+                print(f"  ⚠ Timeout waiting for {item_type} content, but proceeding anyway...")
+            except Exception as e:
+                print(f"  ⚠ Error while waiting: {e}")
 
             print(f"  Current URL: {self.driver.current_url}")
 
-            # Save content
-            assignment_content = None
-            for selector in ["div[role='main']", "main", "div.rc-FormPartsQuestion",
-                           "div.rc-CMLOrHTML", "form"]:
-                try:
-                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    assignment_content = content_elem.get_attribute('outerHTML')
-                    if assignment_content and len(assignment_content) > 100:
-                        break
-                except:
-                    continue
+            # Extract additional metadata (like due date, weight, etc.)
+            metadata = ""
+            try:
+                # Look for header info in modern view
+                header_info = self.driver.find_elements(By.CSS_SELECTOR, "[data-testid='header-right'], .rc-AssignmentHeader")
+                if header_info:
+                    metadata = " • ".join([el.text.strip().replace('\n', ' ') for el in header_info if el.text.strip()])
+            except:
+                pass
+
+            # Extract assignment content
+            assets_dir_name = f"{item_counter:03d}_{title}_{item_type}_assets"
+            assets_dir = module_dir / assets_dir_name
+            
+            assignment_content, image_count = self._extract_assignment_content(assets_dir, assets_dir_name)
+            downloaded_count += image_count
 
             if assignment_content:
+                # Download CSS
+                css_links_html = self._download_course_css(course_dir)
+                
                 filename = f"{item_counter:03d}_{title}_{item_type}.html"
                 assignment_file = self._get_or_move_file(course_dir, module_dir, filename)
-                with open(assignment_file, 'w', encoding='utf-8') as f:
-                    f.write(f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{title}</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-        img {{ max-width: 100%; height: auto; }}
-        code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }}
-        pre {{ background: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }}
-        .question {{ margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #007bff; }}
-    </style>
-</head>
-<body>
-    <h1>{title}</h1>
-    <p><strong>Type:</strong> {item_type.title()}</p>
-    <p><strong>URL:</strong> {self.driver.current_url}</p>
-    <hr>
-    {assignment_content}
-</body>
-</html>""")
+                
+                # Save to HTML file
+                self._save_assignment_html(assignment_file, title, item_type, assignment_content, css_links_html, metadata)
+                
                 downloaded_count += 1
                 downloaded_something = True
-                print(f"  ✓ {item_type.title()} content saved")
+                print(f"  ✓ {item_type.title()} content saved (with {image_count} images)")
 
-                # Click the Save Draft button
-                try:
-                    save_btn = self.driver.find_element(By.XPATH,
-                        "//button[contains(., 'Save draft') or contains(., 'Save Draft')]")
-                    if save_btn.is_displayed() and save_btn.is_enabled():
-                        save_btn.click()
-                        print(f"  ✓ Clicked 'Save draft'")
-                        time.sleep(2)
-                except:
-                    print(f"  ℹ No 'Save draft' button found")
+                # Try to click 'Save draft' button to avoid annoying popups on exit
+                self._click_save_draft_button()
+            else:
+                print(f"  ⚠ No assignment content found to save")
 
         except Exception as e:
             print(f"  ⚠ Error processing {item_type}: {e}")
@@ -1051,13 +1270,17 @@ class CourseraDownloader:
 
             # Wait for content to load
             try:
-                WebDriverWait(self.driver, 15).until(
-                    expected_conditions.presence_of_element_located((By.XPATH, "//main | //div[@role='main']"))
+                # Look for main content or article or specialized assignment containers
+                WebDriverWait(self.driver, 30).until(
+                    expected_conditions.presence_of_element_located((By.XPATH, "//main | //div[@role='main'] | //article | //div[@id='TUNNELVISIONWRAPPER_CONTENT_ID']"))
                 )
                 time.sleep(2)
             except TimeoutException:
-                print(f"  ⚠ Timeout waiting for page content")
+                print(f"  ⚠ Timeout waiting for page content on {item_url}")
+                # Sometimes Coursera loads slowly but the elements eventually appear during processing
                 time.sleep(3)
+            except Exception as e:
+                print(f"  ⚠ Unexpected error waiting for page content: {e}")
 
             title = self._get_item_title(item_url)
 
@@ -1115,7 +1338,7 @@ class CourseraDownloader:
             return 0, 0
 
         # Wait for content
-        self._wait_for_module_content()
+        self._wait_for_module_content(module_num)
 
         # Extract items
         item_links = self._extract_module_items()
