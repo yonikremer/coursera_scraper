@@ -33,7 +33,7 @@ class CourseraDownloader:
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(exist_ok=True)
         
-        # Global shared assets for all courses
+        # Global shared assets for all courses.
         self.shared_assets_dir = self.download_dir / "shared_assets"
         self.shared_assets_dir.mkdir(exist_ok=True)
         (self.shared_assets_dir / "css").mkdir(exist_ok=True)
@@ -41,7 +41,7 @@ class CourseraDownloader:
 
         self.session = requests.Session()
         self.image_cache_file = self.shared_assets_dir / "image_cache.json"
-        self.image_url_to_path = {}  # Cache to avoid re-downloading the same URL in one session
+        self.image_url_to_path = {}  # Cache to avoid re-downloading the same URL in one session.
         self._load_image_cache()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -123,7 +123,7 @@ class CourseraDownloader:
             time.sleep(3)
             print("✓ Login successful!")
 
-            # Save cookies for future sessions
+            # Save cookies for future sessions.
             self._save_cookies()
 
             for cookie in self.driver.get_cookies():
@@ -172,19 +172,19 @@ class CourseraDownloader:
             with open(self.cookies_file, 'rb') as f:
                 cookies = pickle.load(f)
 
-            # Navigate to Coursera first (required to set cookies for the domain)
+            # Navigate to Coursera first (required to set cookies for the domain).
             self.driver.get("https://www.coursera.org")
             time.sleep(2)
 
-            # Add each cookie to the browser
+            # Add each cookie to the browser.
             for cookie in cookies:
                 try:
-                    # Remove domain if it starts with a dot (compatibility fix)
+                    # Remove domain if it starts with a dot (compatibility fix).
                     if 'domain' in cookie and cookie['domain'].startswith('.'):
                         cookie['domain'] = cookie['domain'][1:]
                     self.driver.add_cookie(cookie)
                 except Exception as e:
-                    # Skip cookies that can't be added
+                    # Skip cookies that can't be added.
                     pass
 
             print("✓ Cookies loaded successfully")
@@ -196,11 +196,11 @@ class CourseraDownloader:
     def _verify_login(self) -> bool:
         """Verify if the current session is logged in."""
         try:
-            # Navigate to a protected page to check login status
+            # Navigate to a protected page to check login status.
             self.driver.get("https://www.coursera.org/my-learning")
             time.sleep(3)
 
-            # Check if we're still on the my-learning page (logged in)
+            # Check if we're still on the my-learning page (logged in).
             if "my-learning" in self.driver.current_url or self._check_logged_in():
                 print("✓ Already logged in")
                 return True
@@ -218,37 +218,37 @@ class CourseraDownloader:
         """
         print(f"Attempting to login for: {self.email}")
 
-        # Try to load saved cookies first
+        # Try to load saved cookies first.
         if self._load_cookies():
-            # Sync cookies to requests session
+            # Sync cookies to requests session.
             for cookie in self.driver.get_cookies():
                 self.session.cookies.set(cookie['name'], cookie['value'])
 
-            # Verify the login is still valid
+            # Verify the login is still valid.
             if self._verify_login():
-                # Login successful with saved cookies
+                # Login successful with saved cookies.
                 return
             else:
                 print("\nℹ Saved cookies are expired or invalid")
                 print("  Proceeding with manual login...\n")
 
-        # No saved cookies or they expired - do manual login
+        # No saved cookies or they expired - do manual login.
         self.login_with_google()
 
     @staticmethod
     def sanitize_filename(filename: str) -> str:
         """Remove invalid characters from the filename, convert to lowercase with underscores."""
-        # Replace invalid characters and punctuation with underscores
+        # Replace invalid characters and punctuation with underscores.
         sanitized = re.sub(r'[<>:"/\\|?*,!]', '_', filename)
-        # Handle ellipsis and multiple dots (replace with single underscore)
+        # Handle ellipsis and multiple dots (replace with single underscore).
         sanitized = re.sub(r'\.{2,}', '_', sanitized)
-        # Replace spaces and hyphens with underscores
+        # Replace spaces and hyphens with underscores.
         sanitized = sanitized.replace(' ', '_').replace('-', '_')
-        # Convert to lowercase
+        # Convert to lowercase.
         sanitized = sanitized.lower()
-        # Remove multiple consecutive underscores
+        # Remove multiple consecutive underscores.
         sanitized = re.sub(r'_+', '_', sanitized)
-        # Strip leading/trailing underscores
+        # Strip leading/trailing underscores.
         sanitized = sanitized.strip('_')
         return sanitized or "untitled"
 
@@ -257,14 +257,14 @@ class CourseraDownloader:
         """Extract a meaningful slug from Coursera URL."""
         if not item_url:
             return ""
-        # Remove query parameters
+        # Remove query parameters.
         url = item_url.split('?')[0]
-        # Split by /
+        # Split by /.
         parts = [p for p in url.split('/') if p]
         if not parts:
             return ""
         
-        # If it ends in /attempt, /submission, /view, etc., skip that part
+        # If it ends in /attempt, /submission, /view, etc., skip that part.
         if parts[-1].lower() in ['attempt', 'submission', 'view', 'instructions', 'gradedLab', 'ungradedLab']:
             slug = parts[-2] if len(parts) >= 2 else parts[-1]
         else:
@@ -281,20 +281,20 @@ class CourseraDownloader:
         """
         target_path = module_dir / target_name
         
-        # Ensure module directory exists
+        # Ensure module directory exists.
         module_dir.mkdir(exist_ok=True)
 
-        # 1. If an item already exists in the module directory with the exact name, return it
+        # 1. If an item already exists in the module directory with the exact name, return it.
         if target_path.exists():
             return target_path
 
-        # 2. Search for the item in all possible locations
-        # Locations: course root, current module, and all other module directories
+        # 2. Search for the item in all possible locations.
+        # Locations: course root, current module, and all other module directories.
         search_dirs = [course_dir, module_dir]
         if course_dir.exists():
             search_dirs.extend([d for d in course_dir.glob("module_*") if d.is_dir()])
         
-        # Unique resolved paths
+        # Unique resolved paths.
         unique_search_dirs = []
         seen_resolved = set()
         for sd in search_dirs:
@@ -481,7 +481,7 @@ class CourseraDownloader:
         elif '/ungradedLab/' in item_url or '/gradedLab/' in item_url:
             return "lab"
         else:
-            warnings.warn(f"Un-recognized item type: {item_url}")
+            warnings.warn(f"Unrecognized item type: {item_url}")
             return "other"
 
     def _get_item_title(self, item_url: str) -> str:
@@ -500,6 +500,22 @@ class CourseraDownloader:
             title = item_url.split('/')[-1].split('?')[0]
 
         return title
+
+    def _get_network_m3u8(self) -> str:
+        """Extract m3u8 URL from browser network logs."""
+        try:
+            logs = self.driver.get_log('performance')
+            for entry in logs:
+                message = json.loads(entry.get('message', '{}'))
+                params = message.get('message', {}).get('params', {})
+                request = params.get('request', {})
+                url = request.get('url', '')
+                
+                if url and '.m3u8' in url and ('coursera' in url or 'cloudfront' in url):
+                    return url
+        except Exception as e:
+            pass
+        return ""
 
     def _switch_video_quality_to_hd(self):
         """Attempt to switch video player quality to HD via UI interaction."""
@@ -660,68 +676,42 @@ class CourseraDownloader:
         # 5. Strategy: Check for HLS/DASH Manifests in DOM (Fallback)
         best_dom_src = None
         if not manifest_url:
-            # Check video element sources for manifests
-            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+            try:
+                # Check video element sources for manifests
+                video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+                print(f"  Found {len(video_elements)} video element(s)")
 
-            for video in video_elements:
-                sources = [
-                    video.get_attribute('src'),
-                    *[source.get_attribute('src') for source in video.find_elements(By.TAG_NAME, 'source')]
-                ]
-                sources = [s for s in sources if s]
+                for video in video_elements:
+                    sources = [
+                        video.get_attribute('src'),
+                        *[source.get_attribute('src') for source in video.find_elements(By.TAG_NAME, 'source')]
+                    ]
+                    sources = [s for s in sources if s]
 
-                if sources:
-                    best_dom_src = sources[0] # Default fallback
+                    if sources:
+                        best_dom_src = sources[0] # Default fallback
 
-                for s in sources:
-                    if '.m3u8' in s or '.mpd' in s:
-                        manifest_url = s
-                        print(f"  ✓ Found manifest URL in DOM: {s[:60]}...")
-                        break
-                if manifest_url: break
-
-        # 3. Strategy: Check for HLS/DASH Manifests (m3u8/mpd)
-        # These contain all quality levels. If found, yt-dlp can pick the best one.
-        manifest_url = None
-        best_dom_src = None
-        
-        try:
-            # Check video element sources for manifests
-            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
-            print(f"  Found {len(video_elements)} video element(s)")
-
-            for video in video_elements:
-                sources = [
-                    video.get_attribute('src'),
-                    *[source.get_attribute('src') for source in video.find_elements(By.TAG_NAME, 'source')]
-                ]
-                sources = [s for s in sources if s]
+                    for s in sources:
+                        if '.m3u8' in s or '.mpd' in s:
+                            manifest_url = s
+                            print(f"  ✓ Found manifest URL in DOM: {s[:60]}...")
+                            break
+                    if manifest_url: break
                 
-                if sources:
-                    best_dom_src = sources[0] # Default fallback
-                
-                for s in sources:
-                    if '.m3u8' in s or '.mpd' in s:
-                        manifest_url = s
-                        print(f"  ✓ Found manifest URL: {s[:60]}...")
-                        break
-                if manifest_url: break
-            
-            # If not in video tag, check page source for m3u8 regex (Coursera often embeds it in JS)
-            if not manifest_url:
-                import re
-                m3u8_matches = re.findall(r'(https?://[^"\']+\.m3u8[^"\']*)', self.driver.page_source)
-                if m3u8_matches:
-                    # Filter for likely video manifests
-                    valid_matches = [m for m in m3u8_matches if 'coursera' in m or 'cloudfront' in m]
-                    if valid_matches:
-                        manifest_url = valid_matches[0]
-                        print(f"  ✓ Found manifest URL in page source")
+                # If not in video tag, check page source for m3u8 regex (Coursera often embeds it in JS)
+                if not manifest_url:
+                    m3u8_matches = re.findall(r'(https?://[^"\']+\.m3u8[^"\']*)', self.driver.page_source)
+                    if m3u8_matches:
+                        # Filter for likely video manifests
+                        valid_matches = [m for m in m3u8_matches if 'coursera' in m or 'cloudfront' in m]
+                        if valid_matches:
+                            manifest_url = valid_matches[0]
+                            print(f"  ✓ Found manifest URL in page source")
 
-        except Exception as e:
-            print(f"  ⚠ Error inspecting for manifests: {e}")
+            except Exception as e:
+                print(f"  ⚠ Error inspecting for manifests: {e}")
 
-        # 4. Strategy: yt-dlp with Manifest (High Success for HD)
+        # 6. Strategy: yt-dlp with Manifest (High Success for HD)
         if manifest_url:
             print(f"  ⬇ Downloading from manifest with yt-dlp (Best Quality)...")
             try:
@@ -731,8 +721,8 @@ class CourseraDownloader:
             except Exception as e:
                  print(f"  ⚠ yt-dlp manifest download failed: {e}")
         
-        # 5. Strategy: yt-dlp on Page URL (Retry, might work if extractor updated)
-        # Skip this if we already tried manifest, and it failed, likely won't work either.
+        # 7. Strategy: yt-dlp on Page URL (Retry, might work if extractor updated)
+        # Skip this if we already tried the manifest and it failed; it likely won't work either.
         if not manifest_url:
             print(f"  ⬇ Trying high-quality download with yt-dlp (Page URL)...")
             try:
@@ -743,14 +733,14 @@ class CourseraDownloader:
             except Exception as e:
                 print(f"  ⚠ yt-dlp failed: {e}")
 
-        # 6. Fallback: Use the best available DOM source (likely 540p)
+        # 8. Fallback: Use the best available DOM source (likely 540p)
         if best_dom_src:
             print(f"  ⚠ Falling back to standard quality source (DOM)...")
             if self.download_file(best_dom_src, main_video_file):
                 print(f"  ✓ Video saved: {main_video_file.name}")
                 return True, 1
                 
-        # 7. Final Fallback: Any download button
+        # 9. Final Fallback: Any download button
         try:
             if download_buttons:
                 for btn in download_buttons:
@@ -818,7 +808,7 @@ class CourseraDownloader:
         downloaded_something = False
 
         try:
-            # Get reading content
+            # Get reading content.
             content_elem = None
             content = None
             selector_used = None
@@ -836,34 +826,34 @@ class CourseraDownloader:
                 except:
                     continue
 
-            # Download attachments
+            # Download attachments.
             downloaded_count += self._download_attachments(course_dir, module_dir, item_counter, downloaded_files)
 
-            # Process assets if content was found
+            # Process assets if content was found.
             css_links_html = ""
             if content and selector_used:
-                # 1. Download CSS (shared for the course)
+                # 1. Download CSS (shared for the course).
                 css_links_html = self._download_course_css()
 
-                # 2. Download Images within content
-                # Re-find the element to ensure it's not stale after CSS download
+                # 2. Download Images within content.
+                # Re-find the element to ensure it's not stale after CSS download.
                 try:
                     content_elem = self.driver.find_element(By.CSS_SELECTOR, selector_used)
                     downloaded_count += self._localize_images(content_elem)
                 except Exception as e:
                     print(f"  ⚠ Error localizing images: {e}")
                 
-                # Get updated content with local image paths
+                # Get updated content with local image paths.
                 try:
-                    # Re-find again just to be safe
+                    # Re-find again just to be safe.
                     content_elem = self.driver.find_element(By.CSS_SELECTOR, selector_used)
                     content = content_elem.get_attribute('innerHTML')
                 except Exception as e:
                     print(f"  ⚠ Error getting final content: {e}")
-                    # Fallback to original content if update fails
+                    # Fallback to original content if update fails.
                     pass
 
-                # 3. Save HTML content
+                # 3. Save HTML content.
                 filename = f"{item_counter:03d}_{title}.html"
                 html_file = self._get_or_move_path(course_dir, module_dir, filename)
                 with open(html_file, 'w', encoding='utf-8') as f:
@@ -902,11 +892,11 @@ class CourseraDownloader:
     def _download_course_css(self) -> str:
         """Download all CSS files for the course and return HTML link tags."""
         css_links_html = ""
-        # Use global shared assets for deduplication across all courses
+        # Use global shared assets for deduplication across all courses.
         css_dir = self.shared_assets_dir / "css"
         css_dir.mkdir(parents=True, exist_ok=True)
         
-        # 1. Capture external stylesheets
+        # 1. Capture external stylesheets.
         try:
             css_elements = self.driver.find_elements(By.XPATH, "//link[@rel='stylesheet']")
             for idx, link in enumerate(css_elements):
@@ -921,14 +911,14 @@ class CourseraDownloader:
                     
                     css_path = css_dir / css_filename
                     if self.download_file(href, css_path):
-                        # Path is relative to files in module_N/ directory (two levels up to coursera_downloads)
+                        # Path is relative to files in module_N/ directory (two levels up to coursera_downloads).
                         css_links_html += f'    <link rel="stylesheet" href="../../shared_assets/css/{css_filename}">\n'
                 except:
                     continue
         except:
             pass
 
-        # 2. Capture inline styles
+        # 2. Capture inline styles.
         try:
             style_elements = self.driver.find_elements(By.TAG_NAME, "style")
             inline_count = 0
@@ -937,7 +927,7 @@ class CourseraDownloader:
                     css_text = style.get_attribute('innerHTML')
                     if not css_text or len(css_text.strip()) < 20: continue
                     
-                    # Hash the content to avoid duplicates across pages
+                    # Hash the content to avoid duplicates across pages.
                     content_hash = hashlib.md5(css_text.encode('utf-8', errors='ignore')).hexdigest()
                     css_filename = f"inline_{content_hash[:12]}.css"
                     css_path = css_dir / css_filename
@@ -963,7 +953,7 @@ class CourseraDownloader:
         try:
             images = content_elem.find_elements(By.TAG_NAME, "img")
             if images:
-                # Use global shared images for deduplication across all courses
+                # Use global shared images for deduplication across all courses.
                 global_images_dir = self.shared_assets_dir / "images"
                 
                 for img in images:
@@ -976,11 +966,11 @@ class CourseraDownloader:
                             self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, local_src)
                             continue
 
-                        # Determine extension
+                        # Determine extension.
                         ext = src.split('?')[0].split('.')[-1] if '.' in src.split('?')[0] else "png"
                         if len(ext) > 4 or not ext.isalnum(): ext = "png"
                         
-                        # Fetch the image to get its hash for deduplication
+                        # Fetch the image to get its hash for deduplication.
                         try:
                             response = self.session.get(src, timeout=20)
                             response.raise_for_status()
@@ -989,19 +979,19 @@ class CourseraDownloader:
                             print(f"  ⚠ Failed to fetch image {src}: {e}")
                             continue
 
-                        # Hash image content
+                        # Hash image content.
                         content_hash = hashlib.md5(img_content).hexdigest()
                         img_name = f"{content_hash}.{ext}"
                         img_path = global_images_dir / img_name
                         
-                        # Save if it doesn't exist
+                        # Save if it doesn't exist.
                         if not img_path.exists():
                             with open(img_path, 'wb') as f:
                                 f.write(img_content)
                             downloaded_count += 1
                         
-                        # Update the DOM to point to global shared assets
-                        # HTML files are usually 2 levels deep from coursera_downloads (course/module/file.html)
+                        # Update the DOM to point to global shared assets.
+                        # HTML files are usually 2 levels deep from coursera_downloads (course/module/file.html).
                         local_src = f"../../shared_assets/images/{img_name}"
                         self.image_url_to_path[src] = local_src
                         self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, local_src)
