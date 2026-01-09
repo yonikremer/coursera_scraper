@@ -1,3 +1,4 @@
+import re
 import time
 import zipfile
 import shutil
@@ -503,29 +504,37 @@ class LabExtractor:
                     
                     time.sleep(3)  # Give time for download to start.
 
-                    # Wait for Files.zip to be downloaded.
-                    print(f"  ⏳ Waiting for Files.zip to download (30s timeout)...")
-                    zip_file = None
-                    for attempt in range(30):  # Wait up to 30 seconds.
-                        # Check in download directory.
-                        potential_zip = self.download_dir / "Files.zip"
-                        if potential_zip.exists():
-                            zip_file = potential_zip
-                            break
-                        # Also check in user's Downloads folder.
-                        downloads_folder = Path.home() / "Downloads" / "Files.zip"
-                        if downloads_folder.exists():
-                            zip_file = downloads_folder
-                            break
+                    # Wait for ANY zip file to be downloaded and identify the correct one.
+                    print(f"  ⏳ Waiting for zip file to download (30s timeout)...")
+                    downloaded_zip_file = None
+                    start_time = time.time()
+                    
+                    while time.time() - start_time < 30:
+                        potential_zips = []
+                        # Check in configured download dir
+                        for p in self.download_dir.glob("Files*.zip"):
+                            potential_zips.append(p)
+                        # Check in user's Downloads folder
+                        for p in (Path.home() / "Downloads").glob("Files*.zip"):
+                            potential_zips.append(p)
+                        
+                        if potential_zips:
+                            # Sort by modification time (most recent first)
+                            potential_zips.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                            # Pick the most recently modified one
+                            downloaded_zip_file = potential_zips[0]
+                            # Ensure it's not a partial download
+                            if downloaded_zip_file.stat().st_size > 0:
+                                break
                         time.sleep(1)
 
-                    if zip_file and zip_file.exists():
-                        print(f"  ✓ Files.zip downloaded: {zip_file}")
+                    if downloaded_zip_file and downloaded_zip_file.exists():
+                        print(f"  ✓ Zip file downloaded: {downloaded_zip_file.name}")
                         
                         try:
                             # Extract the zip file.
-                            print(f"  📦 Extracting Files.zip...")
-                            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                            print(f"  📦 Extracting {downloaded_zip_file.name}...")
+                            with zipfile.ZipFile(downloaded_zip_file, 'r') as zip_ref:
                                 zip_ref.extractall(lab_dir)
 
                             
@@ -586,14 +595,21 @@ class LabExtractor:
                                 print(f"    ⚠ Error while flattening: {e}")
                             
                             # Delete the zip file.
-                            zip_file.unlink()
-                            print(f"  ✓ Deleted Files.zip")
+                            downloaded_zip_file.unlink()
+                            print(f"  ✓ Deleted {downloaded_zip_file.name}")
                             zip_downloaded = True
                             downloaded_something = True
                             
                         except zipfile.BadZipFile:
-                            print(f"  ⚠ Files.zip is corrupted. Ignoring.")
-                            zip_file.unlink(missing_ok=True)
+                            print(f"  ⚠ {downloaded_zip_file.name} is corrupted. Ignoring.")
+                            downloaded_zip_file.unlink(missing_ok=True)
+                        except Exception as e:
+                            print(f"  ⚠ Error during zip extraction or cleanup: {e}")
+                            if downloaded_zip_file.exists():
+                                downloaded_zip_file.unlink(missing_ok=True) # Try to delete even if extraction failed.
+                                
+                    else:
+                        print(f"  ⚠ Zip file not found after download attempt.")
 
             # Fallback to individual files if zip failed
             if not zip_downloaded and not files_downloaded_via_selection_paths: # Only try individual if selection/zip failed
