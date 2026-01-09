@@ -41,7 +41,7 @@ class CourseraDownloader:
 
         self.session = requests.Session()
         self.image_cache_file = self.shared_assets_dir / "image_cache.json"
-        self.image_url_to_path = {}  # Cache to avoid re-downloading same URL in one session
+        self.image_url_to_path = {}  # Cache to avoid re-downloading the same URL in one session
         self._load_image_cache()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -89,6 +89,9 @@ class CourseraDownloader:
             "safebrowsing.enabled": True
         }
         chrome_options.add_experimental_option("prefs", prefs)
+        
+        # Enable performance logging to capture m3u8 URLs
+        chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
         self.driver = webdriver.Chrome(options=chrome_options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -160,7 +163,7 @@ class CourseraDownloader:
             print(f"⚠ Error saving cookies: {e}")
 
     def _load_cookies(self) -> bool:
-        """Load cookies from file and add them to the browser session."""
+        """Load cookies from a file and add them to the browser session."""
         if not self.cookies_file.exists():
             print("ℹ No saved cookies found")
             return False
@@ -234,7 +237,7 @@ class CourseraDownloader:
 
     @staticmethod
     def sanitize_filename(filename: str) -> str:
-        """Remove invalid characters from filename, convert to lowercase with underscores."""
+        """Remove invalid characters from the filename, convert to lowercase with underscores."""
         # Replace invalid characters and punctuation with underscores
         sanitized = re.sub(r'[<>:"/\\|?*,!]', '_', filename)
         # Handle ellipsis and multiple dots (replace with single underscore)
@@ -301,7 +304,7 @@ class CourseraDownloader:
                     unique_search_dirs.append(sd)
                     seen_resolved.add(res)
 
-        # 2.1. Check for exact name match in other directories
+        # 2.1. Check for the exact name match in other directories
         for sd in unique_search_dirs:
             if sd.resolve() == module_dir.resolve(): continue
             source_path = sd / target_name
@@ -498,72 +501,267 @@ class CourseraDownloader:
 
         return title
 
+    def _switch_video_quality_to_hd(self):
+        """Attempt to switch video player quality to HD via UI interaction."""
+        try:
+            # 1. Find a video player container and hover
+            try:
+                video_player = self.driver.find_element(By.CSS_SELECTOR, ".rc-VideoPlayer, .c-video-player")
+                from selenium.webdriver.common.action_chains import ActionChains
+                ActionChains(self.driver).move_to_element(video_player).perform()
+                time.sleep(1)
+            except:
+                pass # Proceed even if hover fails, buttons might be visible
+
+            # 2. Click Settings (Gear Icon)
+            print("  ⚙ Opening video settings...")
+            settings_btn = None
+            settings_selectors = [
+                "button[data-testid='videoSettingsMenuButton']",
+                "button[aria-label='Settings']",
+                "button.c-player-settings-button",
+                ".rc-VideoSettingsMenu button"
+            ]
+            
+            for selector in settings_selectors:
+                try:
+                    btns = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for btn in btns:
+                        if btn.is_displayed():
+                            settings_btn = btn
+                            break
+                    if settings_btn: break
+                except: pass
+            
+            if not settings_btn:
+                print("  ⚠ Settings button not found")
+                return
+
+            self.driver.execute_script("arguments[0].click();", settings_btn)
+            time.sleep(1)
+            
+            # 3. Find "Quality" menu item
+            print("  ⚙ finding Quality menu...")
+            quality_menu = None
+            quality_selectors = [
+                "button[data-testid='menuitem-Quality']",
+                "button[aria-label='Quality']",
+                ".rc-VideoSettingsMenu li", 
+                ".c-player-settings-menu-item"
+            ]
+            
+            for selector in quality_selectors:
+                try:
+                    items = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for item in items:
+                        if "Quality" in item.text or item.get_attribute("aria-label") == "Quality":
+                            quality_menu = item
+                            break
+                    if quality_menu: break
+                except: pass
+            
+            if quality_menu:
+                self.driver.execute_script("arguments[0].click();", quality_menu)
+                time.sleep(1)
+                
+                # 4. Select Highest Resolution
+                resolutions = self.driver.find_elements(By.CSS_SELECTOR, "button[role='option'], li[role='menuitemradio'], .c-player-settings-menu-item")
+                target_res = None
+                
+                # Parse resolutions to find max available
+                res_map = {}
+                for res in resolutions:
+                    text = res.text or res.get_attribute("aria-label") or ""
+                    # Extract number from "720p", "1080p", etc.
+                    match = re.search(r'(\d+)p', text)
+                    if match:
+                        val = int(match.group(1))
+                        res_map[val] = res
+                
+                if res_map:
+                    max_res = max(res_map.keys())
+                    target_res = res_map[max_res]
+                    print(f"  ✓ Switching player quality to: {max_res}p")
+                
+                if target_res:
+                    self.driver.execute_script("arguments[0].click();", target_res)
+                    time.sleep(3) # Wait for buffer switch
+            else:
+                print("  ⚠ Quality menu not found")
+        except Exception as e:
+            print(f"  ⚠ Error switching video quality: {e}")
+            pass
+
     def _process_video_item(self, course_dir: Path, module_dir: Path, item_counter: int,
                            title: str, item_url: str) -> Tuple[bool, int]:
         """Process and download video items."""
         downloaded_count = 0
         downloaded_something = False
 
-        try:
-            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
-            print(f"  Found {len(video_elements)} video element(s)")
+        # 1. Determine target filename for the main video
+        main_filename = f"{item_counter:03d}_{title}.mp4"
+        main_video_file = self._get_or_move_path(course_dir, module_dir, main_filename)
+        
+        if main_video_file.exists() and main_video_file.stat().st_size > 0:
+             print(f"  ℹ Video already exists: {main_video_file.name}")
+             return True, 1
 
-            for idx, video in enumerate(video_elements):
+        # 2. Strategy: Check the "Downloads" section buttons first (often the clearest source)
+        try:
+            download_buttons = self.driver.find_elements(By.XPATH,
+                "//a[contains(text(), 'Download') and (contains(@href, '.mp4') or contains(@href, 'video'))]")
+            
+            if download_buttons:
+                print(f"  Found {len(download_buttons)} download button(s)")
+                best_href = None
+                
+                # Priority: 720p/1080p > 540p > others
+                for btn in download_buttons:
+                    href = btn.get_attribute('href')
+                    if not href: continue
+                    text = btn.text.lower()
+                    
+                    if '720p' in text or '720p' in href or '1080p' in text or '1080p' in href:
+                        best_href = href
+                        print(f"  ✓ Found HD download link")
+                        break
+                    
+                if best_href:
+                    print(f"  ⬇ Downloading from button...")
+                    if self.download_file(best_href, main_video_file):
+                        print(f"  ✓ Video saved: {main_video_file.name}")
+                        return True, 1
+
+        except Exception as e:
+            print(f"  ⚠ Error checking download buttons: {e}")
+
+        # Try to force HD quality in player UI before checking sources
+        # This updates the <video src="..."> attribute
+        self._switch_video_quality_to_hd()
+        time.sleep(3) # Wait for player to re-load source
+
+        # 3. Strategy: Extract direct URL from Video Element (Best for direct MP4)
+        try:
+            video_element = self.driver.find_element(By.TAG_NAME, "video")
+            current_src = video_element.get_attribute('src')
+            if current_src and not current_src.startswith('blob:'):
+                print(f"  ✓ Found direct video source: {current_src[:60]}...")
+                if self.download_file(current_src, main_video_file):
+                    print(f"  ✓ Video saved from direct source: {main_video_file.name}")
+                    return True, 1
+        except Exception as e:
+            print(f"  ⚠ Error checking direct video source: {e}")
+
+        # 4. Strategy: Check Network Logs for Manifest
+        manifest_url = self._get_network_m3u8()
+        if manifest_url:
+            print(f"  ✓ Found manifest URL in network logs")
+
+        # 5. Strategy: Check for HLS/DASH Manifests in DOM (Fallback)
+        best_dom_src = None
+        if not manifest_url:
+            # Check video element sources for manifests
+            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+
+            for video in video_elements:
                 sources = [
                     video.get_attribute('src'),
                     *[source.get_attribute('src') for source in video.find_elements(By.TAG_NAME, 'source')]
                 ]
+                sources = [s for s in sources if s]
 
-                sources_720p = [s for s in sources if s and '720' in s]
-                if sources_720p:
-                    sources = sources_720p
-                else:
-                    sources = [s for s in sources if s]
+                if sources:
+                    best_dom_src = sources[0] # Default fallback
 
-                for video_src in sources:
-                    if video_src:
-                        print(f"  Video source: {video_src[:80]}...")
-                        filename = f"{item_counter:03d}_{title}_{idx}.mp4"
-                        video_file = self._get_or_move_path(course_dir, module_dir, filename)
+                for s in sources:
+                    if '.m3u8' in s or '.mpd' in s:
+                        manifest_url = s
+                        print(f"  ✓ Found manifest URL in DOM: {s[:60]}...")
+                        break
+                if manifest_url: break
 
-                        if not video_file.exists():
-                            print(f"  ⬇ Downloading video (720p preferred)...")
-                            try:
-                                if self.download_file(video_src, video_file):
-                                    downloaded_count += 1
-                                    downloaded_something = True
-                                    print(f"  ✓ Video saved: {video_file.name}")
-                                else:
-                                    print(f"  Trying alternative download method (720p)...")
-                                    if self.download_video(item_url, video_file):
-                                        downloaded_count += 1
-                                        downloaded_something = True
-                                        print(f"  ✓ Video saved: {video_file.name}")
-                            except Exception as e:
-                                print(f"  ⚠ Error downloading video: {e}")
-                        else:
-                            print(f"  ℹ Video already exists: {video_file.name}")
-                            downloaded_something = True
+        # 3. Strategy: Check for HLS/DASH Manifests (m3u8/mpd)
+        # These contain all quality levels. If found, yt-dlp can pick the best one.
+        manifest_url = None
+        best_dom_src = None
+        
+        try:
+            # Check video element sources for manifests
+            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+            print(f"  Found {len(video_elements)} video element(s)")
 
-            # Also check for download buttons
-            download_btns = self.driver.find_elements(By.XPATH,
-                "//a[contains(text(), 'Download') and (contains(@href, '.mp4') or contains(@href, 'video'))]")
-
-            for btn in download_btns:
-                href = btn.get_attribute('href')
-                if href:
-                    href = href.replace("full/540p", "full/720p")
-                    print(f"  Found download link: {href[:80]}...")
-                    filename = f"{item_counter:03d}_{title}.mp4"
-                    video_file = self._get_or_move_path(course_dir, module_dir, filename)
-                    if not video_file.exists():
-                        if self.download_file(href, video_file):
-                            downloaded_count += 1
-                            downloaded_something = True
-                            print(f"  ✓ Video saved: {video_file.name}")
+            for video in video_elements:
+                sources = [
+                    video.get_attribute('src'),
+                    *[source.get_attribute('src') for source in video.find_elements(By.TAG_NAME, 'source')]
+                ]
+                sources = [s for s in sources if s]
+                
+                if sources:
+                    best_dom_src = sources[0] # Default fallback
+                
+                for s in sources:
+                    if '.m3u8' in s or '.mpd' in s:
+                        manifest_url = s
+                        print(f"  ✓ Found manifest URL: {s[:60]}...")
+                        break
+                if manifest_url: break
+            
+            # If not in video tag, check page source for m3u8 regex (Coursera often embeds it in JS)
+            if not manifest_url:
+                import re
+                m3u8_matches = re.findall(r'(https?://[^"\']+\.m3u8[^"\']*)', self.driver.page_source)
+                if m3u8_matches:
+                    # Filter for likely video manifests
+                    valid_matches = [m for m in m3u8_matches if 'coursera' in m or 'cloudfront' in m]
+                    if valid_matches:
+                        manifest_url = valid_matches[0]
+                        print(f"  ✓ Found manifest URL in page source")
 
         except Exception as e:
-            print(f"  ⚠ Error processing video: {e}")
+            print(f"  ⚠ Error inspecting for manifests: {e}")
+
+        # 4. Strategy: yt-dlp with Manifest (High Success for HD)
+        if manifest_url:
+            print(f"  ⬇ Downloading from manifest with yt-dlp (Best Quality)...")
+            try:
+                if self.download_video(manifest_url, main_video_file):
+                    print(f"  ✓ Video saved with yt-dlp: {main_video_file.name}")
+                    return True, 1
+            except Exception as e:
+                 print(f"  ⚠ yt-dlp manifest download failed: {e}")
+        
+        # 5. Strategy: yt-dlp on Page URL (Retry, might work if extractor updated)
+        # Skip this if we already tried manifest, and it failed, likely won't work either.
+        if not manifest_url:
+            print(f"  ⬇ Trying high-quality download with yt-dlp (Page URL)...")
+            try:
+                # Use --ignore-errors to prevent crash
+                if self.download_video(item_url, main_video_file):
+                    print(f"  ✓ Video saved with yt-dlp: {main_video_file.name}")
+                    return True, 1
+            except Exception as e:
+                print(f"  ⚠ yt-dlp failed: {e}")
+
+        # 6. Fallback: Use the best available DOM source (likely 540p)
+        if best_dom_src:
+            print(f"  ⚠ Falling back to standard quality source (DOM)...")
+            if self.download_file(best_dom_src, main_video_file):
+                print(f"  ✓ Video saved: {main_video_file.name}")
+                return True, 1
+                
+        # 7. Final Fallback: Any download button
+        try:
+            if download_buttons:
+                for btn in download_buttons:
+                    href = btn.get_attribute('href')
+                    if href:
+                        print(f"  ⚠ Falling back to download button (SD)...")
+                        if self.download_file(href, main_video_file):
+                            print(f"  ✓ Video saved: {main_video_file.name}")
+                            return True, 1
+        except:
+            pass
 
         return downloaded_something, downloaded_count
 
@@ -1241,7 +1439,8 @@ class CourseraDownloader:
 
                 if download_all_btn and download_all_btn.is_displayed() and download_all_btn.is_enabled():
                     print(f"  ✓ Clicking 'Download all files' button...")
-                    download_all_btn.click()
+                    # Use JavaScript click to avoid interception
+                    self.driver.execute_script("arguments[0].click();", download_all_btn)
                     time.sleep(3)  # Give time for download to start
                 else:
                     error_msg = f"❌ CRITICAL ERROR: 'Download all files' button not found!\n"
@@ -1419,7 +1618,8 @@ class CourseraDownloader:
                         "//main | //div[@role='main'] | //article | //div[@id='TUNNELVISIONWRAPPER_CONTENT_ID'] | " +
                         "//video | //div[@class='rc-VideoItem'] | " +
                         "//div[contains(@class, 'rc-FormPartsQuestion')] | //div[contains(@class, 'rc-CMLOrHTML')] | " +
-                        "//div[contains(@class, 'rc-CML')] | //div[contains(@class, 'ItemHeader')]"
+                        "//div[contains(@class, 'rc-CML')] | //div[contains(@class, 'ItemHeader')] | " +
+                        "//div[contains(@class, 'rc-AssignmentPage')] | //h1 | //h2"
                     ))
                 )
                 time.sleep(2)
@@ -1527,6 +1727,24 @@ class CourseraDownloader:
 
         return items_processed, materials_downloaded
 
+    def _cleanup_stale_modules(self, course_dir: Path, valid_modules: Set[int]):
+        """Delete module folders that are not in the valid_modules set."""
+        if not course_dir.exists():
+            return
+            
+        for item in course_dir.iterdir():
+            if item.is_dir() and item.name.startswith("module_"):
+                try:
+                    # Extract number
+                    num_part = item.name.replace("module_", "")
+                    if num_part.isdigit():
+                        module_num = int(num_part)
+                        if module_num not in valid_modules:
+                            print(f"  🗑 Deleting stale module directory: {item.name}")
+                            shutil.rmtree(item)
+                except Exception as e:
+                    print(f"  ⚠ Error cleaning up {item.name}: {e}")
+
     def get_course_content(self, course_url: str) -> int:
         """Navigate through the course and collect all downloadable materials."""
         print(f"\n{'=' * 60}")
@@ -1540,6 +1758,7 @@ class CourseraDownloader:
         total_materials = 0
         visited_urls = set()
         downloaded_files = set()
+        valid_modules = set()
 
         print("\nNavigating to course...")
         self.driver.get(course_url)
@@ -1550,9 +1769,16 @@ class CourseraDownloader:
             items_processed, materials_downloaded = self._process_module(
                 course_url, course_slug, module_num, course_dir, visited_urls, downloaded_files
             )
+            
+            if items_processed > 0:
+                valid_modules.add(module_num)
+
             total_materials += materials_downloaded
             if items_processed == 0:
                 break
+        
+        # Cleanup stale modules (from previous runs or if they don't exist anymore)
+        self._cleanup_stale_modules(course_dir, valid_modules)
 
         print(f"\n{'=' * 60}")
         print(f"✓ Course complete!")
