@@ -39,7 +39,7 @@ uv pip install -r requirements.txt
 The script is pre-configured for your Google Advanced Data Analytics certificate:
 
 ```bash
-python coursera_scraper.py
+python main.py
 ```
 
 This will:
@@ -50,7 +50,7 @@ This will:
 ### Custom Usage
 
 ```bash
-python coursera_scraper.py --email your.email@gmail.com --cert-url "https://www.coursera.org/professional-certificates/your-certificate" --output-dir "my_courses"
+python main.py --email your.email@gmail.com --cert-url "https://www.coursera.org/professional-certificates/your-certificate" --output-dir "my_courses"
 ```
 
 ### Command Line Options
@@ -60,14 +60,44 @@ python coursera_scraper.py --email your.email@gmail.com --cert-url "https://www.
 - `--output-dir`: Output directory for downloads (default: coursera_downloads)
 - `--headless`: Run browser in headless mode (not recommended for first login)
 
+## AI Reading Summarization
+
+The project includes an optional tool to generate AI-powered summaries of downloaded reading materials using Google's Gemini API.
+
+### Setup
+
+1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/).
+2. Set your API key as an environment variable:
+   ```bash
+   # Windows
+   set GEMINI_API_KEY=your_actual_key_here
+
+   # macOS/Linux
+   export GEMINI_API_KEY=your_actual_key_here
+   ```
+
+### Usage
+
+After downloading your course materials, run:
+
+```bash
+python summarize_readings.py
+```
+
+This script will:
+1. Scan your `coursera_downloads` directory for HTML reading files.
+2. Use Gemini to generate a concise summary of the content.
+3. Use contextual memory to ensure summaries focus on *new* information, avoiding repetition from previous lessons.
+4. Inject the summary box directly into the top of each HTML file for easy reviewing.
+
 ## How It Works
 
-1. **Authentication**: Opens Chrome browser and navigates to Coursera login
-2. **Google Login**: You manually complete the entire Google login flow in the browser
-3. **Certificate Navigation**: Extracts all course URLs from the professional certificate
+1. **Authentication**: Opens Chrome browser and navigates to Coursera login.
+2. **Google Login**: You manually complete the entire Google login flow in the browser. Cookies are saved to `coursera_downloads/coursera_cookies.pkl` for persistent login.
+3. **Certificate Navigation**: Extracts all course URLs from the professional certificate.
 4. **Course Download**: For each course:
-   - Iterates through modules (Module 1, 2, 3, etc.)
-   - Extracts all item links from each module page
+   - Iterates through modules (Module 1, 2, 3, etc.).
+   - Extracts all item links from each module page.
    - Downloads each item sequentially:
      - Videos (MP4 in 720p quality)
      - PDFs and resources
@@ -94,12 +124,13 @@ python coursera_scraper.py --email your.email@gmail.com --cert-url "https://www.
 
 ## Important Notes
 
-- **Manual Login**: You'll need to manually enter your password and complete any 2FA
-- **Time**: Downloading all 8 courses may take several hours depending on content size
-- **Browser Window**: Don't close the Chrome window during the process
-- **Enrollment Required**: You must be enrolled in the courses to download materials
-- **Network**: Ensure stable internet connection
-- **Disk Space**: Make sure you have enough disk space (several GB)
+- **Manual Login**: You'll need to manually enter your password and complete any 2FA.
+- **Persistent Login**: Cookies are saved after the first successful login, so you won't need to log in manually every time unless they expire.
+- **Time**: Downloading all courses in a certificate may take several hours depending on content size.
+- **Browser Window**: Don't close the Chrome window during the process.
+- **Enrollment Required**: You must be enrolled in the courses to download materials.
+- **Network**: Ensure stable internet connection.
+- **Disk Space**: Make sure you have enough disk space (several GB).
 
 ## Troubleshooting
 
@@ -116,14 +147,14 @@ Download from https://chromedriver.chromium.org/
 ```
 
 ### Login Timeout
-If login times out, increase the timeout in line 99 of coursera_scraper.py:
+If login times out, increase the timeout in `coursera/auth.py` (line 35):
 ```python
-WebDriverWait(self.driver, 120)  # Change 120 to higher value
+WebDriverWait(self.driver, 180)  # Change 180 to higher value
 ```
 
 ### Video Download Fails
 - Ensure yt-dlp is up to date: `pip install --upgrade yt-dlp`
-- Some videos may be protected and cannot be downloaded
+- Some videos may be protected and cannot be downloaded.
 
 ## Legal Notice
 
@@ -132,7 +163,7 @@ This tool is for personal use only. Ensure you comply with Coursera's Terms of S
 ## Example Run
 
 ```
-$ python coursera_scraper.py
+$ python main.py
 
 ============================================================
 Coursera Material Downloader
