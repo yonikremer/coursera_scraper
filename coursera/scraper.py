@@ -47,7 +47,7 @@ class CourseraScraper:
         self.video_extractor = VideoExtractor(self.driver, self.download_dir, self.session)
         self.reading_extractor = ReadingExtractor(self.driver, self.session, self.asset_manager)
         self.quiz_extractor = QuizExtractor(self.driver, self.session, self.asset_manager)
-        self.lab_extractor = LabExtractor(self.driver, self.download_dir)
+        self.lab_extractor = LabExtractor(self.driver, self.download_dir, self.shared_assets_dir)
 
     def shutdown(self):
         """Cleanup resources."""
