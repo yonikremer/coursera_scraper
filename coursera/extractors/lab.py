@@ -496,98 +496,141 @@ class LabExtractor:
                                 break
                         time.sleep(1)
 
-                    if downloaded_zip_file and downloaded_zip_file.exists():
-                        print(f"  ✓ Zip file downloaded: {downloaded_zip_file.name}")
+                                            if downloaded_zip_file and downloaded_zip_file.exists():
 
-                        try:
-                            # Extract the zip file.
-                            print(f"  📦 Extracting {downloaded_zip_file.name}...")
-                            with zipfile.ZipFile(downloaded_zip_file, 'r') as zip_ref:
-                                zip_ref.extractall(lab_dir)
+                                                print(f"  ✓ Zip file downloaded: {downloaded_zip_file.name}")
 
+                                                
 
-                            # Add all extracted files to the downloaded_files_in_lab list
-                            # Iterate through the zip file's contents to get relative paths
-                            # The files are extracted into lab_dir, so we need to get their full paths.
-                            for member in zip_ref.namelist():
-                                full_path_in_lab = lab_dir / member
-                                if full_path_in_lab.is_file():
-                                    downloaded_files_in_lab.append(full_path_in_lab)
+                                                try:
 
-                            # Identify the deepest directory that contains actual files
-                            # Often it's Files/home/jovyan/work/
-                            # We want to find the first directory that has more than one child 
-                            # or contains an .ipynb file.
+                                                    # Extract the zip file.
 
-                            def find_content_root(current_path: Path):
-                                children = list(current_path.iterdir())
-                                # Skip hidden folders like .ipynb_checkpoints for root detection
-                                visible_children = [c for c in children if not c.name.startswith('.')]
+                                                    print(f"  📦 Extracting {downloaded_zip_file.name}...")
 
-                                if len(visible_children) == 1 and visible_children[0].is_dir():
-                                    return find_content_root(visible_children[0])
-                                return current_path
+                                                    with zipfile.ZipFile(downloaded_zip_file, 'r') as zip_ref:
 
-                            try:
-                                content_root = find_content_root(lab_dir)
-                                if content_root != lab_dir:
-                                    print(f"  📁 Flattening directory structure from: {content_root.relative_to(lab_dir)}")
+                                                        zip_ref.extractall(lab_dir)
 
-                                    # Create a temporary list to store files being moved, to avoid modifying
-                                    # downloaded_files_in_lab while iterating if any of them are in content_root
-                                    files_to_readd = []
-                                    files_to_remove = []
+                        
 
-                                    for item in content_root.iterdir():
-                                        if item.is_file() or (item.is_dir() and item.name != ".ipynb_checkpoints"): # Do not move checkpoint folders directly
-                                            dest = lab_dir / item.name
-                                            if not dest.exists():
-                                                shutil.move(str(item), str(dest))
-                                                # Mark for removal from the old path and addition with the new path
-                                                for i, old_item_path in enumerate(downloaded_files_in_lab):
-                                                    if old_item_path == item:
-                                                        files_to_remove.append(item)
-                                                        break
-                                                files_to_readd.append(dest)
+                                                    # Identify the deepest directory that contains actual files
 
-                                    for f in files_to_remove:
-                                        downloaded_files_in_lab.remove(f)
-                                    downloaded_files_in_lab.extend(files_to_readd)
+                                                    # Often it's Files/home/jovyan/work/
 
-                                    # Cleanup the now redundant top-level "Files" or similar
-                                    # Check for actual contents before removing, in case it was a single file moved
-                                    if not list(content_root.iterdir()): # Only remove if empty
-                                        shutil.rmtree(content_root)
+                                                    def find_content_root(current_path: Path):
 
-                            except Exception as e:
-                                print(f"    ⚠ Error while flattening: {e}")
+                                                        children = list(current_path.iterdir())
 
-                            # Delete the zip file.
-                            downloaded_zip_file.unlink()
-                            print(f"  ✓ Deleted {downloaded_zip_file.name}")
-                            zip_downloaded = True
-                            downloaded_something = True
+                                                        visible_children = [c for c in children if not c.name.startswith('.')]
 
-                        except zipfile.BadZipFile:
-                            print(f"  ⚠ {downloaded_zip_file.name} is corrupted. Ignoring.")
-                            downloaded_zip_file.unlink(missing_ok=True)
-                        except OSError as e: # Catch file system errors during extraction or cleanup
-                            print(f"  ⚠ Error during zip extraction or cleanup: {e}")
-                            if downloaded_zip_file.exists():
-                                downloaded_zip_file.unlink(missing_ok=True) # Try to delete even if extraction failed.
+                                                        if len(visible_children) == 1 and visible_children[0].is_dir():
 
-                    else:
-                        print(f"  ⚠ Zip file not found after download attempt.")
+                                                            return find_content_root(visible_children[0])
 
-            # Fallback to individual files if zip failed
-            if not zip_downloaded and not files_downloaded_via_selection_paths: # Only try individual if selection/zip failed
-                print(f"  ⚠ Zip download failed or skipped. Trying individual files...")
-                individual_downloaded_paths = self._download_individual_files(lab_dir)
-                if individual_downloaded_paths:
-                    downloaded_files_in_lab.extend(individual_downloaded_paths)
-                    downloaded_something = True
+                                                        return current_path
 
-            # --- Shared Assets Migration ---
+                        
+
+                                                    try:
+
+                                                        content_root = find_content_root(lab_dir)
+
+                                                        if content_root != lab_dir:
+
+                                                            print(f"  📁 Flattening directory structure from: {content_root.relative_to(lab_dir)}")
+
+                                                            for item in content_root.iterdir():
+
+                                                                dest = lab_dir / item.name
+
+                                                                if not dest.exists():
+
+                                                                    shutil.move(str(item), str(dest))
+
+                                                            
+
+                                                            # Cleanup the now redundant top-level "Files" or similar
+
+                                                            if not list(content_root.iterdir()):
+
+                                                                shutil.rmtree(content_root)
+
+                                                    except Exception as e:
+
+                                                        print(f"    ⚠ Error while flattening: {e}")
+
+                                                    
+
+                                                    zip_downloaded = True
+
+                                                    
+
+                                                except zipfile.BadZipFile:
+
+                                                    print(f"  ⚠ {downloaded_zip_file.name} is corrupted. Ignoring.")
+
+                                                except (OSError, ValueError) as e:
+
+                                                    print(f"  ⚠ Error during zip extraction or cleanup: {e}")
+
+                                                finally:
+
+                                                    # Always attempt to delete the zip file
+
+                                                    if downloaded_zip_file and downloaded_zip_file.exists():
+
+                                                        try:
+
+                                                            downloaded_zip_file.unlink()
+
+                                                            print(f"  ✓ Deleted {downloaded_zip_file.name}")
+
+                                                        except OSError as e:
+
+                                                            print(f"  ⚠ Could not delete {downloaded_zip_file.name}: {e}")
+
+                                                    
+
+                                                    # Proactive cleanup: remove any other Files*.zip
+
+                                                    for dir_path in [self.download_dir, Path.home() / "Downloads"]:
+
+                                                        try:
+
+                                                            for junk_zip in dir_path.glob("Files*.zip"):
+
+                                                                if junk_zip.exists():
+
+                                                                    junk_zip.unlink()
+
+                                                                    print(f"  🧹 Cleaned up junk zip: {junk_zip.name}")
+
+                                                        except (OSError, PermissionError):
+
+                                                            pass
+
+                                                        
+
+                                            else:
+
+                                                print(f"  ⚠ Zip file not found after download attempt.")
+
+                        
+
+                                    # Identify all files currently in lab_dir for migration (from zip OR individual downloads)
+
+                                    # We do this AFTER flattening to get correct paths.
+
+                                    downloaded_files_in_lab = [f for f in lab_dir.rglob("*") if f.is_file()]
+
+                                    if downloaded_files_in_lab:
+
+                                        downloaded_something = True
+
+                        
+
+                                    # --- Shared Assets Migration ---
             print(f"  📦 Migrating shared assets...")
             replacements = {}
             ipynb_files = []
