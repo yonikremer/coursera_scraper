@@ -212,7 +212,7 @@ class CourseraScraper:
                 materials_downloaded += count
 
             if item_type == "lab":
-                downloaded_something, count = self.lab_extractor.process(course_dir, module_dir, item_counter, title)
+                downloaded_something, count = self.lab_extractor.process(course_dir, module_dir, item_counter, title, item_url)
                 materials_downloaded += count
 
             # Process PDFs (for all item types)
@@ -250,9 +250,25 @@ class CourseraScraper:
             time.sleep(3)
             
             if f"week/{module_num}" not in self.driver.current_url:
-                print(f"✓ No more modules found (attempted module {module_num})")
-                print(f"  Continuing to next course...")
-                return 0, 0
+                # Special handling for module/week 1:
+                # Some courses redirect week/1 to 'welcome' or 'home', but the content is there.
+                has_content = False
+                if module_num == 1:
+                    print(f"  ℹ Checking for content despite URL mismatch (Current: {self.driver.current_url})...")
+                    try:
+                        # Quick check for items
+                        items = self.driver.find_elements(By.XPATH, "//ul[@data-testid='named-item-list-list']//a")
+                        if items:
+                            print(f"  ✓ Found {len(items)} items on page, proceeding as Module 1")
+                            has_content = True
+                    except Exception:
+                        pass
+                
+                if not has_content:
+                    print(f"✓ No more modules found (attempted module {module_num})")
+                    print(f"  Current URL: {self.driver.current_url}")
+                    print(f"  Continuing to next course...")
+                    return 0, 0
             else:
                  print(f"  ✓ Found content at week/{module_num}")
 
@@ -290,6 +306,68 @@ class CourseraScraper:
 
         return items_processed, materials_downloaded
 
+    def _handle_auto_enroll(self, course_url: str):
+        """Check for and handle the 'Enroll' button if present."""
+        try:
+            # Look for Enroll button
+            enroll_selectors = [
+                "//button[@data-e2e='enroll-button']",
+                "//button[contains(., 'Enroll')]",
+                "//span[data-test='enroll-button-label']//ancestor::button",
+                "//a[contains(@href, 'action=enroll')]"
+            ]
+            
+            enroll_btn = None
+            for selector in enroll_selectors:
+                try:
+                    btns = self.driver.find_elements(By.XPATH, selector)
+                    for btn in btns:
+                        if btn.is_displayed() and btn.is_enabled():
+                            enroll_btn = btn
+                            break
+                    if enroll_btn: break
+                except NoSuchElementException:
+                    continue
+
+            if enroll_btn:
+                print(f"  ℹ Enrollment required. Clicking 'Enroll' button...")
+                self.driver.execute_script("arguments[0].click();", enroll_btn)
+                time.sleep(5)
+                
+                # Sometimes there's a second 'Enroll' or 'Go to Course' button in a modal
+                for second_btn_text in ["Enroll for Free", "Join Course", "Go to Course", "Go to course"]:
+                    try:
+                        second_btns = self.driver.find_elements(By.XPATH, f"//button[contains(., '{second_btn_text}')] | //a[contains(., '{second_btn_text}')]")
+                        for sbtn in second_btns:
+                            if sbtn.is_displayed():
+                                print(f"  ✓ Clicking '{second_btn_text}'...")
+                                self.driver.execute_script("arguments[0].click();", sbtn)
+                                time.sleep(5)
+                                break
+                    except Exception:
+                        continue
+                
+                # If still on the same page, try navigating to the course home directly
+                if "learn" in self.driver.current_url and "/home" not in self.driver.current_url:
+                    print(f"  ℹ Navigating to course home...")
+                    self.driver.get(f"{course_url}/home/module/1")
+                    time.sleep(5)
+            
+            # Also check for "Go to course" button which appears if already enrolled but not on course home
+            try:
+                go_to_course_btns = self.driver.find_elements(By.XPATH, "//a[contains(., 'Go to Course')] | //a[contains(., 'Go to course')]")
+                for btn in go_to_course_btns:
+                    if btn.is_displayed():
+                        print(f"  ✓ Found 'Go to Course' button, clicking...")
+                        self.driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(5)
+                        break
+            except Exception:
+                pass
+
+        except Exception as e:
+            print(f"  ⚠ Error during auto-enrollment: {e}")
+
     def get_course_content(self, course_url: str) -> int:
         """Navigate through the course and collect all downloadable materials."""
         print(f"\n{'=' * 60}")
@@ -308,6 +386,9 @@ class CourseraScraper:
         print("\nNavigating to course...")
         self.driver.get(course_url)
         time.sleep(5)
+
+        # Handle auto-enrollment if needed
+        self._handle_auto_enroll(course_url)
 
         # Iterate through modules
         for module_num in range(1, 21):
