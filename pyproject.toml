@@ -5,7 +5,7 @@ description = "Download all course materials from enrolled Coursera courses and 
 requires-python = ">=3.12"
 dependencies = [
     "selenium>=4.15.0",
-    "requests>=2.31.0",
+    "requests>=2.32.5",
     "yt-dlp>=2023.11.0",
     "brotli>=1.1.0",
 ]
