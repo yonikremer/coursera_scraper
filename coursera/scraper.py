@@ -239,13 +239,22 @@ class CourseraScraper:
         print(f"{'-' * 60}")
 
         self.driver.get(module_url)
-        time.sleep(2)
+        time.sleep(3)
 
         # Check if module exists
         if f"module/{module_num}" not in self.driver.current_url:
-            print(f"✓ No more modules found (attempted module {module_num})")
-            print(f"  Continuing to next course...")
-            return 0, 0
+            # Try 'week' format if 'module' format didn't work
+            week_url = f"{course_url}/home/week/{module_num}"
+            print(f"  ℹ URL does not contain 'module/{module_num}', trying 'week/{module_num}'...")
+            self.driver.get(week_url)
+            time.sleep(3)
+            
+            if f"week/{module_num}" not in self.driver.current_url:
+                print(f"✓ No more modules found (attempted module {module_num})")
+                print(f"  Continuing to next course...")
+                return 0, 0
+            else:
+                 print(f"  ✓ Found content at week/{module_num}")
 
         # Wait for content
         self._wait_for_module_content(module_num)
@@ -255,21 +264,13 @@ class CourseraScraper:
         print(f"  Found {len(item_links)} items in module {module_num}")
 
         if len(item_links) == 0:
-            print(f"\n❌ ERROR: No items found in module {module_num}")
-            print(f"Current URL: {self.driver.current_url}")
+            print(f"\n  ℹ No items found in module {module_num} (likely end of course).")
+            # Don't raise exception, just return 0 to stop the loop naturally
+            return 0, 0
 
-            debug_file = self.download_dir / f"debug_module_{module_num}_{course_slug}.html"
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write(self.driver.page_source)
-
-            print(f"Page source saved to: {debug_file}")
-            print(f"Page title: {self.driver.title}")
-
-            raise Exception(f"No items found in module {module_num}. Page source saved for debugging.")
-
-        # Create module directory
+        # Create module directory - DEFERRED to get_or_move_path to avoid empty folders
         module_dir = course_dir / f"module_{module_num}"
-        module_dir.mkdir(exist_ok=True)
+        # module_dir.mkdir(exist_ok=True) 
 
         # Process each item
         items_processed = 0
@@ -355,12 +356,18 @@ class CourseraScraper:
             total_materials = 0
 
             for i, course_url in enumerate(courses, 1):
-                print(f"\n\n{'#' * 60}")
-                print(f"Course {i}/{len(courses)}")
-                print(f"{'-' * 60}")
+                try:
+                    print(f"\n\n{'#' * 60}")
+                    print(f"Course {i}/{len(courses)}")
+                    print(f"{'-' * 60}")
 
-                materials = self.get_course_content(course_url)
-                total_materials += materials
+                    materials = self.get_course_content(course_url)
+                    total_materials += materials
+                except Exception as e:
+                    print(f"\n⚠ Error processing course {course_url}: {e}")
+                    print("  Skipping to next course...")
+                    import traceback
+                    traceback.print_exc()
 
             print(f"\n\n{'=' * 60}")
             print(f"✓ DOWNLOAD COMPLETE")
