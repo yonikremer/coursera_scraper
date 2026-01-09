@@ -161,6 +161,38 @@ class VideoExtractor:
         except (NoSuchElementException, TimeoutException, StaleElementReferenceException) as e:
             print(f"  ⚠ Navigation error during HD switch: {e}")
 
+    def _download_subtitles(self, item_counter: int, title: str, course_dir: Path, module_dir: Path):
+        """Find and download English subtitles."""
+        try:
+            # Look for track elements in the video tag
+            tracks = self.driver.find_elements(By.CSS_SELECTOR, "track[kind='captions'][srclang='en'], track[kind='subtitles'][srclang='en']")
+            
+            if not tracks:
+                return
+
+            print(f"  Found {len(tracks)} subtitle track(s).")
+            
+            for track in tracks:
+                src = track.get_attribute('src')
+                label = track.get_attribute('label')
+                
+                if src:
+                    # Construct filename: 001_Title.en.vtt
+                    subtitle_filename = f"{item_counter:03d}_{title}.en.vtt"
+                    subtitle_file = get_or_move_path(course_dir, module_dir, subtitle_filename)
+                    
+                    if subtitle_file.exists() and subtitle_file.stat().st_size > 0:
+                        continue
+                        
+                    print(f"  ⬇ Downloading subtitles ({label})...")
+                    if download_file(src, subtitle_file, self.session):
+                        print(f"  ✓ Subtitles saved: {subtitle_file.name}")
+                        # Only download one English track
+                        break
+
+        except Exception as e:
+            print(f"  ⚠ Error downloading subtitles: {e}")
+
     def process(self, course_dir: Path, module_dir: Path, item_counter: int,
                            title: str, item_url: str, browser_manager: BrowserManager) -> Tuple[bool, int]:
         """Process and download video items."""
@@ -171,6 +203,9 @@ class VideoExtractor:
         main_filename = f"{item_counter:03d}_{title}.mp4"
         main_video_file = get_or_move_path(course_dir, module_dir, main_filename)
         
+        # Always try to download subtitles, even if video exists
+        self._download_subtitles(item_counter, title, course_dir, module_dir)
+
         if main_video_file.exists() and main_video_file.stat().st_size > 0:
              print(f"  ℹ Video already exists: {main_video_file.name}")
              return True, 1
