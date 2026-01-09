@@ -21,8 +21,34 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (
+    TimeoutException, 
+    NoSuchElementException, 
+    StaleElementReferenceException, 
+    ElementClickInterceptedException,
+    JavascriptException,
+    WebDriverException
+)
 import yt_dlp
+
+
+def _cleanup_stale_modules(course_dir: Path, valid_modules: Set[int]):
+    """Delete module folders that are not in the valid_modules set."""
+    if not course_dir.exists():
+        return
+
+    for item in course_dir.iterdir():
+        if item.is_dir() and item.name.startswith("module_"):
+            try:
+                # Extract number.
+                num_part = item.name.replace("module_", "")
+                if num_part.isdigit():
+                    module_num = int(num_part)
+                    if module_num not in valid_modules:
+                        print(f"  🗑 Deleting stale module directory: {item.name}")
+                        shutil.rmtree(item)
+            except OSError as e:
+                print(f"  ⚠ Error cleaning up {item.name}: {e}")
 
 
 class CourseraDownloader:
@@ -159,8 +185,10 @@ class CourseraDownloader:
             with open(self.cookies_file, 'wb') as f:
                 pickle.dump(cookies, f)
             print(f"✓ Cookies saved to {self.cookies_file}")
-        except Exception as e:
-            print(f"⚠ Error saving cookies: {e}")
+        except (OSError, pickle.PickleError) as e:
+            print(f"⚠ Error saving cookies to file: {e}")
+        except WebDriverException as e:
+            print(f"⚠ Browser error while getting cookies: {e}")
 
     def _load_cookies(self) -> bool:
         """Load cookies from a file and add them to the browser session."""
@@ -179,18 +207,21 @@ class CourseraDownloader:
             # Add each cookie to the browser.
             for cookie in cookies:
                 try:
-                    # Remove domain if it starts with a dot (compatibility fix).
+                    # Remove the domain if it starts with a dot (compatibility fix).
                     if 'domain' in cookie and cookie['domain'].startswith('.'):
                         cookie['domain'] = cookie['domain'][1:]
                     self.driver.add_cookie(cookie)
-                except Exception as e:
-                    # Skip cookies that can't be added.
-                    pass
+                except WebDriverException:
+                    # Skip cookies that can't be added (e.g., invalid domain).
+                    continue
 
             print("✓ Cookies loaded successfully")
             return True
-        except Exception as e:
-            print(f"⚠ Error loading cookies: {e}")
+        except (OSError, pickle.PickleError) as e:
+            print(f"⚠ Error loading cookies from file: {e}")
+            return False
+        except WebDriverException as e:
+            print(f"⚠ Browser error while loading cookies: {e}")
             return False
 
     def _verify_login(self) -> bool:
@@ -207,20 +238,20 @@ class CourseraDownloader:
             else:
                 print("ℹ Not logged in (redirected or login elements not found)")
                 return False
-        except Exception as e:
-            print(f"⚠ Error verifying login: {e}")
+        except WebDriverException as e:
+            print(f"⚠ Browser error while verifying login: {e}")
             return False
 
     def login_with_persistence(self):
         """
-        Attempt to login using saved cookies, fall back to manual login if needed.
+        Attempt to log in using saved cookies, fall back to manual login if needed.
         This allows users to stay logged in between script runs.
         """
         print(f"Attempting to login for: {self.email}")
 
         # Try to load saved cookies first.
         if self._load_cookies():
-            # Sync cookies to requests session.
+            # Sync cookies to the requests session.
             for cookie in self.driver.get_cookies():
                 self.session.cookies.set(cookie['name'], cookie['value'])
 
@@ -232,7 +263,7 @@ class CourseraDownloader:
                 print("\nℹ Saved cookies are expired or invalid")
                 print("  Proceeding with manual login...\n")
 
-        # No saved cookies or they expired - do manual login.
+        # if no saved cookies or they expired - do manual login.
         self.login_with_google()
 
     @staticmethod
@@ -273,6 +304,23 @@ class CourseraDownloader:
         return CourseraDownloader.sanitize_filename(slug)
 
     @staticmethod
+    def _get_unique_search_dirs(course_dir: Path, module_dir: Path) -> list[Path]:
+        """Get a list of unique directories to search for items (course root, current module, other modules)."""
+        search_dirs = [course_dir, module_dir]
+        if course_dir.exists():
+            search_dirs.extend([d for d in course_dir.glob("module_*") if d.is_dir()])
+        
+        unique_search_dirs = []
+        seen_resolved = set()
+        for sd in search_dirs:
+            if sd.exists():
+                res = sd.resolve()
+                if res not in seen_resolved:
+                    unique_search_dirs.append(sd)
+                    seen_resolved.add(res)
+        return unique_search_dirs
+
+    @staticmethod
     def _get_or_move_path(course_dir: Path, module_dir: Path, target_name: str) -> Path:
         """
         Check if a file or directory exists in the course directory (from old runs), 
@@ -289,22 +337,9 @@ class CourseraDownloader:
             return target_path
 
         # 2. Search for the item in all possible locations.
-        # Locations: course root, current module, and all other module directories.
-        search_dirs = [course_dir, module_dir]
-        if course_dir.exists():
-            search_dirs.extend([d for d in course_dir.glob("module_*") if d.is_dir()])
-        
-        # Unique resolved paths.
-        unique_search_dirs = []
-        seen_resolved = set()
-        for sd in search_dirs:
-            if sd.exists():
-                res = sd.resolve()
-                if res not in seen_resolved:
-                    unique_search_dirs.append(sd)
-                    seen_resolved.add(res)
+        unique_search_dirs = CourseraDownloader._get_unique_search_dirs(course_dir, module_dir)
 
-        # 2.1. Check for the exact name match in other directories
+        # 2.1. Check for the exact name match in other directories.
         for sd in unique_search_dirs:
             if sd.resolve() == module_dir.resolve(): continue
             source_path = sd / target_name
@@ -313,61 +348,47 @@ class CourseraDownloader:
                 try:
                     shutil.move(str(source_path), str(target_path))
                     return target_path
-                except Exception as e:
+                except OSError as e:
                     print(f"  ⚠ Error moving item: {e}")
 
-        # 3. Fix numbering: check if item exists with a different number prefix
-        # target_name is expected to be like "035_title.ext" or "035_title_assets"
+        # 3. Fix numbering: check if an item exists with a different number prefix.
+        # target_name is expected to be like "035_title.ext" or "035_title_assets".
         if len(target_name) > 4 and target_name[3] == '_':
             suffix = target_name[4:]
             for sd in unique_search_dirs:
-                # Look for items with any 3-digit prefix and the same suffix
+                # Look for items with any 3-digit prefix and the same suffix.
                 for existing in sd.glob(f"[0-9][0-9][0-9]_{suffix}"):
                     if existing.exists() and existing.resolve() != target_path.resolve():
                         print(f"  🔄 Correcting item number/location: {existing.name} (in {sd.name}) → {target_name}")
                         try:
                             shutil.move(str(existing), str(target_path))
                             return target_path
-                        except Exception as e:
+                        except OSError as e:
                             print(f"  ⚠ Error correcting item number for {existing.name}: {e}")
 
         return target_path
 
     @staticmethod
-    def _find_items(course_dir: Path, module_dir: Path, item_counter: int,
-                    item_type: str, item_url: str = None) -> list[Path]:
+    def _find_items(course_dir: Path, module_dir: Path, item_url: str = None) -> list[Path]:
         """
         Check if an item's materials already exist across any module or course directory.
         Relies on slug-based matching to handle re-ordering accurately and avoid prefix hijacking.
         """
-        prefix = f"{item_counter:03d}_"
         all_found = []
         
-        # Get all directories to search (all modules + course root)
-        search_dirs = [module_dir, course_dir]
-        if course_dir.exists():
-            search_dirs.extend([d for d in course_dir.glob("module_*") if d.is_dir()])
-        
-        # Resolve to unique paths
-        unique_search_dirs = []
-        seen_resolved = set()
-        for sd in search_dirs:
-            if sd.exists():
-                res = sd.resolve()
-                if res not in seen_resolved:
-                    unique_search_dirs.append(sd)
-                    seen_resolved.add(res)
+        # Get all directories to search (all modules + course root).
+        unique_search_dirs = CourseraDownloader._get_unique_search_dirs(course_dir, module_dir)
 
-        # 1. Primary Search: Match by slug (best for identifying moved items)
+        # 1. Primary Search: Match by slug (best for identifying moved items).
         if item_url:
             slug = CourseraDownloader._extract_slug(item_url)
             if slug:
                 for directory in unique_search_dirs:
-                    # Match any 3-digit prefix followed by our slug
+                    # Match any 3-digit prefix followed by our slug.
                     slug_matches = list(directory.glob(f"[0-9][0-9][0-9]_{slug}*"))
                     all_found.extend(slug_matches)
 
-        # Remove duplicates and resolve to actual paths
+        # Remove duplicates and resolve to actual paths.
         unique_found = []
         seen_paths = set()
         for p in all_found:
@@ -390,7 +411,7 @@ class CourseraDownloader:
 
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
-            # For small files (not videos), we can just use response.content to ensure proper decompression
+            # For small files (not videos), we can just use response.content to ensure proper decompression.
             if filepath.suffix.lower() not in ['.mp4', '.zip']:
                 with open(filepath, 'wb') as f:
                     f.write(response.content)
@@ -400,7 +421,7 @@ class CourseraDownloader:
                         f.write(chunk)
 
             return True
-        except Exception as e:
+        except (requests.RequestException, OSError) as e:
             print(f"  ⚠ Error downloading {url}: {e}")
             return False
 
@@ -431,9 +452,13 @@ class CourseraDownloader:
             cookies_file.unlink(missing_ok=True)
             return True
 
-        except Exception as e:
+        except (yt_dlp.utils.DownloadError, OSError) as e:
             print(f"  ⚠ Error downloading video: {e}")
             return False
+        except Exception as e:
+             # Fallback for unexpected yt-dlp errors
+             print(f"  ⚠ Unexpected video download error: {e}")
+             return False
 
     def _wait_for_module_content(self, module_num: int):
         """Wait for module content to load."""
@@ -494,10 +519,24 @@ class CourseraDownloader:
                     if title_elem.text.strip():
                         title = self.sanitize_filename(title_elem.text.strip())
                         break
-                except:
+                except NoSuchElementException:
                     continue
-        except:
-            title = item_url.split('/')[-1].split('?')[0]
+        except WebDriverException:
+            pass  # If the driver fails, fall back to URL parsing.
+            
+        if title == "Untitled" and item_url:
+            # Fallback to extracting from URL.
+            try:
+                # Remove query params and extract the last path segment.
+                clean_url = item_url.split('?')[0]
+                if '/' in clean_url:
+                    parts = clean_url.split('/')
+                    if parts[-1]:
+                        title = parts[-1]
+                    elif len(parts) > 1:
+                        title = parts[-2]
+            except (IndexError, AttributeError):
+                pass
 
         return title
 
@@ -506,30 +545,33 @@ class CourseraDownloader:
         try:
             logs = self.driver.get_log('performance')
             for entry in logs:
-                message = json.loads(entry.get('message', '{}'))
-                params = message.get('message', {}).get('params', {})
-                request = params.get('request', {})
-                url = request.get('url', '')
-                
-                if url and '.m3u8' in url and ('coursera' in url or 'cloudfront' in url):
-                    return url
-        except Exception as e:
-            pass
+                try:
+                    message = json.loads(entry.get('message', '{}'))
+                    params = message.get('message', {}).get('params', {})
+                    request = params.get('request', {})
+                    url = request.get('url', '')
+                    
+                    if url and '.m3u8' in url and ('coursera' in url or 'cloudfront' in url):
+                        return url
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except WebDriverException as e:
+            print(f"  ⚠ Error reading performance logs: {e}")
         return ""
 
     def _switch_video_quality_to_hd(self):
-        """Attempt to switch video player quality to HD via UI interaction."""
+        """Attempt to switch the video player quality to HD via UI interaction."""
         try:
-            # 1. Find a video player container and hover
+            # 1. Find a video player container and hover.
             try:
                 video_player = self.driver.find_element(By.CSS_SELECTOR, ".rc-VideoPlayer, .c-video-player")
                 from selenium.webdriver.common.action_chains import ActionChains
                 ActionChains(self.driver).move_to_element(video_player).perform()
                 time.sleep(1)
-            except:
-                pass # Proceed even if hover fails, buttons might be visible
+            except (NoSuchElementException, StaleElementReferenceException):
+                pass  # Hovering is optional.
 
-            # 2. Click Settings (Gear Icon)
+            # 2. Click Settings (Gear Icon).
             print("  ⚙ Opening video settings...")
             settings_btn = None
             settings_selectors = [
@@ -541,23 +583,27 @@ class CourseraDownloader:
             
             for selector in settings_selectors:
                 try:
-                    btns = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for btn in btns:
+                    buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for btn in buttons:
                         if btn.is_displayed():
                             settings_btn = btn
                             break
                     if settings_btn: break
-                except: pass
+                except (NoSuchElementException, StaleElementReferenceException):
+                    continue
             
             if not settings_btn:
                 print("  ⚠ Settings button not found")
                 return
 
-            self.driver.execute_script("arguments[0].click();", settings_btn)
+            try:
+                self.driver.execute_script("arguments[0].click();", settings_btn)
+            except JavascriptException:
+                settings_btn.click()
             time.sleep(1)
             
-            # 3. Find "Quality" menu item
-            print("  ⚙ finding Quality menu...")
+            # 3. Find the "Quality" menu item.
+            print("  ⚙ Finding Quality menu...")
             quality_menu = None
             quality_selectors = [
                 "button[data-testid='menuitem-Quality']",
@@ -574,25 +620,32 @@ class CourseraDownloader:
                             quality_menu = item
                             break
                     if quality_menu: break
-                except: pass
+                except (NoSuchElementException, StaleElementReferenceException):
+                    continue
             
             if quality_menu:
-                self.driver.execute_script("arguments[0].click();", quality_menu)
+                try:
+                    self.driver.execute_script("arguments[0].click();", quality_menu)
+                except JavascriptException:
+                    quality_menu.click()
                 time.sleep(1)
                 
-                # 4. Select Highest Resolution
+                # 4. Select Highest Resolution.
                 resolutions = self.driver.find_elements(By.CSS_SELECTOR, "button[role='option'], li[role='menuitemradio'], .c-player-settings-menu-item")
                 target_res = None
                 
-                # Parse resolutions to find max available
+                # Parse resolutions to find the max available.
                 res_map = {}
                 for res in resolutions:
-                    text = res.text or res.get_attribute("aria-label") or ""
-                    # Extract number from "720p", "1080p", etc.
-                    match = re.search(r'(\d+)p', text)
-                    if match:
-                        val = int(match.group(1))
-                        res_map[val] = res
+                    try:
+                        text = res.text or res.get_attribute("aria-label") or ""
+                        # Extract number from "720p", "1080p", etc.
+                        match = re.search(r'(\d+)p', text)
+                        if match:
+                            val = int(match.group(1))
+                            res_map[val] = res
+                    except StaleElementReferenceException:
+                        continue
                 
                 if res_map:
                     max_res = max(res_map.keys())
@@ -600,13 +653,15 @@ class CourseraDownloader:
                     print(f"  ✓ Switching player quality to: {max_res}p")
                 
                 if target_res:
-                    self.driver.execute_script("arguments[0].click();", target_res)
-                    time.sleep(3) # Wait for buffer switch
+                    try:
+                        self.driver.execute_script("arguments[0].click();", target_res)
+                    except JavascriptException:
+                        target_res.click()
+                    time.sleep(3)  # Wait for the buffer switch.
             else:
                 print("  ⚠ Quality menu not found")
-        except Exception as e:
-            print(f"  ⚠ Error switching video quality: {e}")
-            pass
+        except (NoSuchElementException, TimeoutException, StaleElementReferenceException) as e:
+            print(f"  ⚠ Navigation error during HD switch: {e}")
 
     def _process_video_item(self, course_dir: Path, module_dir: Path, item_counter: int,
                            title: str, item_url: str) -> Tuple[bool, int]:
@@ -614,7 +669,7 @@ class CourseraDownloader:
         downloaded_count = 0
         downloaded_something = False
 
-        # 1. Determine target filename for the main video
+        # 1. Determine the target filename for the main video
         main_filename = f"{item_counter:03d}_{title}.mp4"
         main_video_file = self._get_or_move_path(course_dir, module_dir, main_filename)
         
@@ -648,7 +703,7 @@ class CourseraDownloader:
                         print(f"  ✓ Video saved: {main_video_file.name}")
                         return True, 1
 
-        except Exception as e:
+        except (NoSuchElementException, StaleElementReferenceException) as e:
             print(f"  ⚠ Error checking download buttons: {e}")
 
         # Try to force HD quality in player UI before checking sources
@@ -665,7 +720,7 @@ class CourseraDownloader:
                 if self.download_file(current_src, main_video_file):
                     print(f"  ✓ Video saved from direct source: {main_video_file.name}")
                     return True, 1
-        except Exception as e:
+        except (NoSuchElementException, StaleElementReferenceException) as e:
             print(f"  ⚠ Error checking direct video source: {e}")
 
         # 4. Strategy: Check Network Logs for Manifest
@@ -698,7 +753,7 @@ class CourseraDownloader:
                             break
                     if manifest_url: break
                 
-                # If not in video tag, check page source for m3u8 regex (Coursera often embeds it in JS)
+                # If not in video tag, check the page source for m3u8 regex (Coursera often embeds it in JS)
                 if not manifest_url:
                     m3u8_matches = re.findall(r'(https?://[^"\']+\.m3u8[^"\']*)', self.driver.page_source)
                     if m3u8_matches:
@@ -708,7 +763,7 @@ class CourseraDownloader:
                             manifest_url = valid_matches[0]
                             print(f"  ✓ Found manifest URL in page source")
 
-            except Exception as e:
+            except (NoSuchElementException, StaleElementReferenceException, JavascriptException) as e:
                 print(f"  ⚠ Error inspecting for manifests: {e}")
 
         # 6. Strategy: yt-dlp with Manifest (High Success for HD)
@@ -718,7 +773,7 @@ class CourseraDownloader:
                 if self.download_video(manifest_url, main_video_file):
                     print(f"  ✓ Video saved with yt-dlp: {main_video_file.name}")
                     return True, 1
-            except Exception as e:
+            except (yt_dlp.utils.DownloadError, OSError) as e:
                  print(f"  ⚠ yt-dlp manifest download failed: {e}")
         
         # 7. Strategy: yt-dlp on Page URL (Retry, might work if extractor updated)
@@ -730,7 +785,7 @@ class CourseraDownloader:
                 if self.download_video(item_url, main_video_file):
                     print(f"  ✓ Video saved with yt-dlp: {main_video_file.name}")
                     return True, 1
-            except Exception as e:
+            except (yt_dlp.utils.DownloadError, OSError) as e:
                 print(f"  ⚠ yt-dlp failed: {e}")
 
         # 8. Fallback: Use the best available DOM source (likely 540p)
@@ -769,35 +824,41 @@ class CourseraDownloader:
             main_pdf_links = []
             for link in pdf_links:
                 try:
-                    link.find_element(By.XPATH, "./ancestor::footer")
+                    try:
+                        link.find_element(By.XPATH, "./ancestor::footer")
+                        continue
+                    except NoSuchElementException:
+                        main_pdf_links.append(link)
+                except StaleElementReferenceException:
                     continue
-                except:
-                    main_pdf_links.append(link)
 
             if main_pdf_links:
-                print(f"  Found {len(main_pdf_links)} PDF link(s) in main content")
+                print(f"  Found {len(main_pdf_links)} PDF link(s) in the main content")
 
             for link in main_pdf_links:
-                href = link.get_attribute('href')
-                if href and href not in downloaded_files:
-                    downloaded_files.add(href)
-                    link_text = link.text.strip() or "document"
-                    base_filename = self.sanitize_filename(link_text)
-                    if not base_filename.endswith('.pdf'):
-                        base_filename += '.pdf'
+                try:
+                    href = link.get_attribute('href')
+                    if href and href not in downloaded_files:
+                        downloaded_files.add(href)
+                        link_text = link.text.strip() or "document"
+                        base_filename = self.sanitize_filename(link_text)
+                        if not base_filename.endswith('.pdf'):
+                            base_filename += '.pdf'
 
-                    filename = f"{item_counter:03d}_{base_filename}"
-                    pdf_file = self._get_or_move_path(course_dir, module_dir, filename)
+                        filename = f"{item_counter:03d}_{base_filename}"
+                        pdf_file = self._get_or_move_path(course_dir, module_dir, filename)
 
-                    if not pdf_file.exists():
-                        print(f"  ⬇ Downloading PDF: {base_filename}")
-                        if self.download_file(href, pdf_file):
-                            downloaded_count += 1
-                            downloaded_something = True
-                            print(f"  ✓ PDF saved: {base_filename}")
+                        if not pdf_file.exists():
+                            print(f"  ⬇ Downloading PDF: {base_filename}")
+                            if self.download_file(href, pdf_file):
+                                downloaded_count += 1
+                                downloaded_something = True
+                                print(f"  ✓ PDF saved: {base_filename}")
+                except StaleElementReferenceException:
+                    continue
 
-        except Exception as e:
-            print(f"  ⚠ Error processing PDFs: {e}")
+        except (NoSuchElementException, WebDriverException) as e:
+            print(f"  ⚠ Browser error while processing PDFs: {e}")
 
         return downloaded_something, downloaded_count
 
@@ -808,8 +869,7 @@ class CourseraDownloader:
         downloaded_something = False
 
         try:
-            # Get reading content.
-            content_elem = None
+            # Get the reading content.
             content = None
             selector_used = None
             
@@ -819,45 +879,44 @@ class CourseraDownloader:
                     elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     inner_html = elem.get_attribute('innerHTML')
                     if inner_html and len(inner_html) > 100:
-                        content_elem = elem
                         content = inner_html
                         selector_used = selector
                         break
-                except:
+                except (NoSuchElementException, StaleElementReferenceException):
                     continue
 
-            # Download attachments.
+            # Download the attachments.
             downloaded_count += self._download_attachments(course_dir, module_dir, item_counter, downloaded_files)
 
-            # Process assets if content was found.
-            css_links_html = ""
+            # Process the assets if content was found.
             if content and selector_used:
-                # 1. Download CSS (shared for the course).
+                # 1. Download the CSS (shared for the course).
                 css_links_html = self._download_course_css()
 
-                # 2. Download Images within content.
-                # Re-find the element to ensure it's not stale after CSS download.
+                # 2. Download the images within the content.
+                # Re-find the element to ensure it's not stale after the CSS download.
                 try:
                     content_elem = self.driver.find_element(By.CSS_SELECTOR, selector_used)
                     downloaded_count += self._localize_images(content_elem)
-                except Exception as e:
+                except (NoSuchElementException, StaleElementReferenceException) as e:
                     print(f"  ⚠ Error localizing images: {e}")
                 
-                # Get updated content with local image paths.
+                # Get the updated content with local image paths.
                 try:
                     # Re-find again just to be safe.
                     content_elem = self.driver.find_element(By.CSS_SELECTOR, selector_used)
                     content = content_elem.get_attribute('innerHTML')
-                except Exception as e:
+                except (NoSuchElementException, StaleElementReferenceException) as e:
                     print(f"  ⚠ Error getting final content: {e}")
-                    # Fallback to original content if update fails.
+                    # Fallback to the original content if the update fails.
                     pass
 
-                # 3. Save HTML content.
+                # 3. Save the HTML content.
                 filename = f"{item_counter:03d}_{title}.html"
                 html_file = self._get_or_move_path(course_dir, module_dir, filename)
-                with open(html_file, 'w', encoding='utf-8') as f:
-                    f.write(f"""<!DOCTYPE html>
+                try:
+                    with open(html_file, 'w', encoding='utf-8') as f:
+                        f.write(f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
@@ -879,13 +938,15 @@ class CourseraDownloader:
     </div>
 </body>
 </html>""")
+                except OSError as e:
+                    print(f"  ⚠ Error writing reading HTML: {e}")
 
                 downloaded_count += 1
                 downloaded_something = True
                 print(f"  ✓ Reading saved as HTML with assets")
 
-        except Exception as e:
-            print(f"  ⚠ Could not save reading: {e}")
+        except WebDriverException as e:
+            print(f"  ⚠ Browser error processing reading item: {e}")
 
         return downloaded_something, downloaded_count
 
@@ -913,10 +974,10 @@ class CourseraDownloader:
                     if self.download_file(href, css_path):
                         # Path is relative to files in module_N/ directory (two levels up to coursera_downloads).
                         css_links_html += f'    <link rel="stylesheet" href="../../shared_assets/css/{css_filename}">\n'
-                except:
+                except (StaleElementReferenceException, WebDriverException):
                     continue
-        except:
-            pass
+        except WebDriverException as e:
+            print(f"  ⚠ Browser error finding stylesheets: {e}")
 
         # 2. Capture inline styles.
         try:
@@ -938,12 +999,12 @@ class CourseraDownloader:
                     
                     css_links_html += f'    <link rel="stylesheet" href="../../shared_assets/css/{css_filename}">\n'
                     inline_count += 1
-                except:
+                except (StaleElementReferenceException, WebDriverException):
                     continue
             if inline_count > 0:
                 print(f"  ✓ Captured {inline_count} inline style(s)")
-        except:
-            pass
+        except WebDriverException as e:
+            print(f"  ⚠ Browser error finding inline styles: {e}")
             
         return css_links_html
 
@@ -975,7 +1036,7 @@ class CourseraDownloader:
                             response = self.session.get(src, timeout=20)
                             response.raise_for_status()
                             img_content = response.content
-                        except Exception as e:
+                        except requests.RequestException as e:
                             print(f"  ⚠ Failed to fetch image {src}: {e}")
                             continue
 
@@ -995,9 +1056,9 @@ class CourseraDownloader:
                         local_src = f"../../shared_assets/images/{img_name}"
                         self.image_url_to_path[src] = local_src
                         self.driver.execute_script("arguments[0].setAttribute('src', arguments[1])", img, local_src)
-                    except:
+                    except (StaleElementReferenceException, WebDriverException):
                         continue
-        except:
+        except (StaleElementReferenceException, WebDriverException):
             pass
         return downloaded_count
 
@@ -1007,7 +1068,7 @@ class CourseraDownloader:
         downloaded_count = 0
 
         try:
-            # Expanded selectors for better coverage of attachments
+            # Expanded selectors for better coverage of the attachments.
             selectors = [
                 "//a[@data-e2e='asset-download-link']",
                 "//div[contains(@class, 'cml-asset')]//a[contains(@href, 'cloudfront.net')]",
@@ -1026,30 +1087,30 @@ class CourseraDownloader:
 
                     downloaded_files.add(attach_url)
 
-                    # Get filename from data-name attribute or link text
+                    # Get the filename from the data-name attribute or link text.
                     attach_name = None
                     try:
                         asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-name]")
                         attach_name = asset_elem.get_attribute('data-name')
-                    except:
+                    except (NoSuchElementException, StaleElementReferenceException):
                         pass
 
                     if not attach_name:
                         try:
                             name_elem = attach_link.find_element(By.XPATH, ".//div[@data-e2e='asset-name']")
                             attach_name = name_elem.text.strip()
-                        except:
+                        except (NoSuchElementException, StaleElementReferenceException):
                             pass
 
                     if not attach_name:
                         attach_name = attach_url.split('/')[-1].split('?')[0]
 
-                    # Get file extension
+                    # Get the file extension.
                     extension = None
                     try:
                         asset_elem = attach_link.find_element(By.XPATH, ".//div[@data-extension]")
                         extension = asset_elem.get_attribute('data-extension')
-                    except:
+                    except (NoSuchElementException, StaleElementReferenceException):
                         if '.' in attach_url.split('/')[-1].split('?')[0]:
                             extension = attach_url.split('/')[-1].split('?')[0].split('.')[-1]
 
@@ -1066,34 +1127,37 @@ class CourseraDownloader:
                             downloaded_count += 1
                             print(f"  ✓ Attachment saved: {attach_name}")
 
-                except Exception as e:
+                except (StaleElementReferenceException, WebDriverException) as e:
                     print(f"  ⚠ Error downloading attachment: {e}")
                     continue
 
-        except Exception as e:
+        except (NoSuchElementException, WebDriverException) as e:
             print(f"  ⚠ Error processing attachments: {e}")
 
         return downloaded_count
 
     def _click_assignment_start_button(self) -> bool:
         """Click the start/resume button for an assignment or quiz."""
-        # Common Coursera button texts for starting assignments/quizzes
+        # Common Coursera button texts for starting assignments/quizzes.
         button_texts = ["Start", "Start Assignment", "Resume", "Continue", "Start Quiz", "Retake Quiz", "Review", "Open", "Launch"]
         
         for btn_text in button_texts:
             try:
-                # Try to find button or link with the text
+                # Try to find button or link with the text.
                 xpath = f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]"
                 start_btn = self.driver.find_element(By.XPATH, xpath)
                 
                 if start_btn.is_displayed() and start_btn.is_enabled():
-                    # Scroll into view to ensure it's clickable
+                    # Scroll into view to ensure it's clickable.
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_btn)
                     time.sleep(1)
                     start_btn.click()
                     print(f"  ✓ Clicked '{btn_text}' button")
                     return True
-            except:
+            except (NoSuchElementException, StaleElementReferenceException, ElementClickInterceptedException):
+                continue
+            except WebDriverException as e:
+                print(f"  ⚠ Browser error clicking start button: {e}")
                 continue
         return False
 
@@ -1112,31 +1176,37 @@ class CourseraDownloader:
             "main"
         ]
         
-        # Try to remove AI instructions if present before extracting
+        # Try to remove any AI instructions if they are present before extracting.
         try:
             self.driver.execute_script("""
                 const aiInstructions = document.querySelectorAll('[data-ai-instructions="true"]');
                 aiInstructions.forEach(el => el.remove());
             """)
-        except:
-            pass
+        except JavascriptException:
+            pass  # Script failure is non-critical.
         
         for selector in selectors:
             try:
-                # Find all matching elements and combine them if there are multiple (like questions)
+                # Find all matching elements and combine them if there are multiple (like questions).
                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 if elements:
                     content = ""
                     for elem in elements:
-                        # Localize images
-                        downloaded_count += self._localize_images(elem)
-                            
-                        html = elem.get_attribute('outerHTML')
-                        if html and len(html) > 100:
-                            content += html + "\n<br>\n"
+                        try:
+                            # Localize images.
+                            downloaded_count += self._localize_images(elem)
+                                
+                            html = elem.get_attribute('outerHTML')
+                            if html and len(html) > 100:
+                                content += html + "\n<br>\n"
+                        except StaleElementReferenceException:
+                            continue
                     if content:
                         return content, downloaded_count
-            except:
+            except (NoSuchElementException, StaleElementReferenceException):
+                continue
+            except WebDriverException as e:
+                print(f"  ⚠ Browser error extracting content with selector '{selector}': {e}")
                 continue
         return "", 0
 
@@ -1217,7 +1287,7 @@ class CourseraDownloader:
 </html>""")
 
     def _click_save_draft_button(self):
-        """Try to click 'Save draft' button if it exists."""
+        """Try to click the 'Save draft' button if it exists."""
         try:
             save_btn = self.driver.find_element(By.XPATH,
                 "//button[contains(., 'Save draft') or contains(., 'Save Draft')]")
@@ -1225,8 +1295,11 @@ class CourseraDownloader:
                 save_btn.click()
                 print(f"  ✓ Clicked 'Save draft'")
                 time.sleep(2)
-        except:
+        except NoSuchElementException:
+            # Button not found; this is expected.
             pass
+        except (WebDriverException, ElementClickInterceptedException) as e:
+            print(f"  ⚠ Error clicking 'Save draft': {e}")
 
     def _process_assignment_or_quiz(self, course_dir: Path, module_dir: Path, item_counter: int,
                                     title: str, item_type: str) -> Tuple[bool, int]:
@@ -1260,51 +1333,51 @@ class CourseraDownloader:
                 time.sleep(2)
             except TimeoutException:
                 print(f"  ⚠ Timeout waiting for {item_type} content, but proceeding anyway...")
-            except Exception as e:
+            except WebDriverException as e:
                 print(f"  ⚠ Error while waiting: {e}")
 
             print(f"  Current URL: {self.driver.current_url}")
 
-            # Extract additional metadata (like due date, weight, etc.)
+            # Extract additional metadata (like due date, weight, etc.).
             metadata = ""
             try:
-                # Look for header info in modern view
+                # Look for header info in modern view.
                 header_info = self.driver.find_elements(By.CSS_SELECTOR, "[data-testid='header-right'], .rc-AssignmentHeader")
                 if header_info:
                     metadata = " • ".join([el.text.strip().replace('\n', ' ') for el in header_info if el.text.strip()])
-            except:
-                pass
+            except (NoSuchElementException, StaleElementReferenceException):
+                pass  # Metadata extraction is optional.
 
-            # Extract assignment content
+            # Extract assignment content.
             assignment_content, image_count = self._extract_assignment_content()
             downloaded_count += image_count
 
             if assignment_content:
-                # Download CSS
+                # Download CSS.
                 css_links_html = self._download_course_css()
                 
                 filename = f"{item_counter:03d}_{title}_{item_type}.html"
                 assignment_file = self._get_or_move_path(course_dir, module_dir, filename)
                 
-                # Save to HTML file
+                # Save to HTML file.
                 self._save_assignment_html(assignment_file, title, item_type, assignment_content, css_links_html, metadata)
                 
                 downloaded_count += 1
                 downloaded_something = True
                 print(f"  ✓ {item_type.title()} content saved (with {image_count} images)")
 
-                # Try to click 'Save draft' button to avoid annoying popups on exit
+                # Try to click 'Save draft' button to avoid annoying popups on exit.
                 self._click_save_draft_button()
             else:
                 print(f"  ⚠ No assignment content found to save")
 
-        except Exception as e:
+        except WebDriverException as e:
             print(f"  ⚠ Error processing {item_type}: {e}")
 
         return downloaded_something, downloaded_count
 
     def _process_lab_item(self, course_dir: Path, module_dir: Path, item_counter: int,
-                         title: str) -> Tuple[bool, int]:
+                         title: str) -> Optional[Tuple[bool, int]]:
         """Process and download Jupyter lab notebooks and data files."""
         downloaded_count = 0
         downloaded_something = False
@@ -1314,11 +1387,11 @@ class CourseraDownloader:
         try:
             print(f"  Processing lab...")
 
-            # Remember the original window handle
+            # Remember the original window handle.
             original_window = self.driver.current_window_handle
             print(f"  Original window: {original_window}")
 
-            # Launch lab
+            # Launch lab.
             launch_clicked = False
             for btn_text in ["Launch Lab", "Open Tool", "Launch", "Continue"]:
                 try:
@@ -1329,7 +1402,7 @@ class CourseraDownloader:
                         launch_btn.click()
                         launch_clicked = True
                         break
-                except:
+                except (NoSuchElementException, StaleElementReferenceException):
                     continue
 
             if not launch_clicked:
@@ -1385,7 +1458,7 @@ class CourseraDownloader:
             print(f"  Lab URL: {current_url}")
 
             try:
-                # Click "Lab files" button to show the file panel
+                # Click "Lab files" button to show the file panel.
                 print(f"  Looking for 'Lab files' button...")
                 lab_files_btn = None
                 for btn_selector in [
@@ -1397,7 +1470,7 @@ class CourseraDownloader:
                         lab_files_btn = self.driver.find_element(By.XPATH, btn_selector)
                         if lab_files_btn.is_displayed():
                             break
-                    except Exception:
+                    except (NoSuchElementException, StaleElementReferenceException):
                         continue
 
                 if lab_files_btn and lab_files_btn.is_displayed():
@@ -1412,7 +1485,7 @@ class CourseraDownloader:
                     print(f"  {error_msg}")
                     raise RuntimeError(error_msg)
 
-                # Click "Download all files" button
+                # Click "Download all files" button.
                 print(f"  Looking for 'Download all files' button...")
                 download_all_btn = None
                 for btn_selector in [
@@ -1424,14 +1497,14 @@ class CourseraDownloader:
                         download_all_btn = self.driver.find_element(By.XPATH, btn_selector)
                         if download_all_btn.is_displayed() and download_all_btn.is_enabled():
                             break
-                    except Exception:
+                    except (NoSuchElementException, StaleElementReferenceException):
                         continue
 
                 if download_all_btn and download_all_btn.is_displayed() and download_all_btn.is_enabled():
                     print(f"  ✓ Clicking 'Download all files' button...")
-                    # Use JavaScript click to avoid interception
+                    # Use JavaScript click to avoid interception.
                     self.driver.execute_script("arguments[0].click();", download_all_btn)
-                    time.sleep(3)  # Give time for download to start
+                    time.sleep(3)  # Give time for download to start.
                 else:
                     error_msg = f"❌ CRITICAL ERROR: 'Download all files' button not found!\n"
                     error_msg += f"  Lab: {title}\n"
@@ -1440,16 +1513,16 @@ class CourseraDownloader:
                     print(f"  {error_msg}")
                     raise RuntimeError(error_msg)
 
-                # Wait for Files.zip to be downloaded
+                # Wait for Files.zip to be downloaded.
                 print(f"  ⏳ Waiting for Files.zip to download...")
                 zip_file = None
-                for attempt in range(30):  # Wait up to 30 seconds
-                    # Check in download directory
+                for attempt in range(30):  # Wait up to 30 seconds.
+                    # Check in download directory.
                     potential_zip = self.download_dir / "Files.zip"
                     if potential_zip.exists():
                         zip_file = potential_zip
                         break
-                    # Also check in user's Downloads folder
+                    # Also check in user's Downloads folder.
                     downloads_folder = Path.home() / "Downloads" / "Files.zip"
                     if downloads_folder.exists():
                         zip_file = downloads_folder
@@ -1459,18 +1532,18 @@ class CourseraDownloader:
                 if zip_file and zip_file.exists():
                     print(f"  ✓ Files.zip downloaded: {zip_file}")
 
-                    # Extract the zip file
+                    # Extract the zip file.
                     print(f"  📦 Extracting Files.zip...")
                     with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                         zip_ref.extractall(lab_dir)
 
                     # The zip contains: Files/home/jovyan/work/
-                    # Move files from work directory to lab_dir root
+                    # Move files from work directory to lab_dir root.
                     work_dir = lab_dir / "Files" / "home" / "jovyan" / "work"
                     if work_dir.exists():
                         print(f"  📁 Moving files from work directory to lab directory...")
                         for item in work_dir.iterdir():
-                            # Skip Jupyter checkpoints
+                            # Skip Jupyter checkpoints.
                             if item.name == '.ipynb_checkpoints':
                                 continue
 
@@ -1481,27 +1554,25 @@ class CourseraDownloader:
                                 shutil.move(str(item), str(dest))
                                 print(f"    ✓ Moved: {item.name}")
                                 downloaded_count += 1
-                                downloaded_something = True
 
-                        # Clean up the Files directory structure
+                        # Clean up the Files directory structure.
                         files_dir = lab_dir / "Files"
                         if files_dir.exists():
                             shutil.rmtree(files_dir)
                             print(f"  ✓ Cleaned up temporary Files directory")
                     else:
-                        # Fallback: extract all files directly
+                        # Fallback: extract all files directly.
                         print(f"  ℹ Work directory not found, extracting all files from zip...")
                         for item in lab_dir.iterdir():
                             if item.is_file() and item.suffix in ['.ipynb', '.csv', '.txt', '.json', '.xlsx', '.py']:
                                 print(f"    ✓ Found: {item.name}")
                                 downloaded_count += 1
-                                downloaded_something = True
 
-                    # Delete the zip file
+                    # Delete the zip file.
                     zip_file.unlink()
                     print(f"  ✓ Deleted Files.zip")
 
-                    # Recursive cleanup of any .ipynb_checkpoints that might have been extracted
+                    # Recursive cleanup of any .ipynb_checkpoints that might have been extracted.
                     for checkpoint_dir in lab_dir.rglob(".ipynb_checkpoints"):
                         if checkpoint_dir.is_dir():
                             try:
@@ -1510,7 +1581,7 @@ class CourseraDownloader:
                             except Exception as e:
                                 print(f"  ⚠ Could not remove checkpoint directory {checkpoint_dir}: {e}")
 
-                    # Save lab info
+                    # Save lab info.
                     lab_info_file = lab_dir / "lab_info.txt"
                     with open(lab_info_file, 'w', encoding='utf-8') as f:
                         f.write(f"Lab: {title}\n")
@@ -1520,7 +1591,7 @@ class CourseraDownloader:
 
                     print(f"  ✓ Lab processing complete")
                 else:
-                    # CRITICAL: If lab files were not downloaded, raise an error and stop
+                    # CRITICAL: If lab files were not downloaded, raise an error and stop.
                     error_msg = f"❌ CRITICAL ERROR: Lab files were NOT downloaded!\n"
                     error_msg += f"  Lab: {title}\n"
                     error_msg += f"  URL: {current_url}\n"
@@ -1539,31 +1610,29 @@ class CourseraDownloader:
             import traceback
             traceback.print_exc()
         finally:
-            # Clean up: close the lab tab and switch back to the original window
+            # Clean up: close the lab tab and switch back to the original window.
             if lab_window and original_window:
                 try:
-                    # Check if the lab window is still open
+                    # Check if the lab window is still open.
                     if lab_window in self.driver.window_handles:
                         print(f"  Closing lab tab...")
                         self.driver.switch_to.window(lab_window)
                         self.driver.close()
                         print(f"  ✓ Lab tab closed")
 
-                    # Switch back to the original window
+                    # Switch back to the original window.
                     if original_window in self.driver.window_handles:
                         print(f"  Switching back to original window...")
                         self.driver.switch_to.window(original_window)
                         print(f"  ✓ Back to course page")
                 except Exception as e:
                     print(f"  ⚠ Error during cleanup: {e}")
-                    # Try to switch back to any available window
+                    # Try to switch back to any available window.
                     try:
                         if len(self.driver.window_handles) > 0:
                             self.driver.switch_to.window(self.driver.window_handles[0])
-                    except:
+                    except WebDriverException:
                         pass
-
-        return downloaded_something, downloaded_count
 
     def _process_course_item(self, item_url: str, course_dir: Path, module_dir: Path,
                            item_counter: int, downloaded_files: Set[str]) -> int:
@@ -1574,7 +1643,7 @@ class CourseraDownloader:
             # Determine item type from URL (before navigating)
             item_type = self._determine_item_type(item_url)
 
-            existing_items = self._find_items(course_dir, module_dir, item_counter, item_type, item_url)
+            existing_items = self._find_items(course_dir, module_dir, item_url)
 
             # Check if an item already exists before navigating
             if len(existing_items) > 0:
@@ -1717,24 +1786,6 @@ class CourseraDownloader:
 
         return items_processed, materials_downloaded
 
-    def _cleanup_stale_modules(self, course_dir: Path, valid_modules: Set[int]):
-        """Delete module folders that are not in the valid_modules set."""
-        if not course_dir.exists():
-            return
-            
-        for item in course_dir.iterdir():
-            if item.is_dir() and item.name.startswith("module_"):
-                try:
-                    # Extract number
-                    num_part = item.name.replace("module_", "")
-                    if num_part.isdigit():
-                        module_num = int(num_part)
-                        if module_num not in valid_modules:
-                            print(f"  🗑 Deleting stale module directory: {item.name}")
-                            shutil.rmtree(item)
-                except Exception as e:
-                    print(f"  ⚠ Error cleaning up {item.name}: {e}")
-
     def get_course_content(self, course_url: str) -> int:
         """Navigate through the course and collect all downloadable materials."""
         print(f"\n{'=' * 60}")
@@ -1768,7 +1819,7 @@ class CourseraDownloader:
                 break
         
         # Cleanup stale modules (from previous runs or if they don't exist anymore)
-        self._cleanup_stale_modules(course_dir, valid_modules)
+        _cleanup_stale_modules(course_dir, valid_modules)
 
         print(f"\n{'=' * 60}")
         print(f"✓ Course complete!")
