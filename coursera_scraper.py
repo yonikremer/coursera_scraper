@@ -13,7 +13,7 @@ import shutil
 import hashlib
 import json
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Set, Tuple, Optional
 
 import requests
 from selenium import webdriver
@@ -30,6 +30,7 @@ from selenium.common.exceptions import (
     WebDriverException
 )
 import yt_dlp
+import yt_dlp.utils
 
 
 def _cleanup_stale_modules(course_dir: Path, valid_modules: Set[int]):
@@ -263,7 +264,7 @@ class CourseraDownloader:
                 print("\nℹ Saved cookies are expired or invalid")
                 print("  Proceeding with manual login...\n")
 
-        # if no saved cookies or they expired - do manual login.
+        # if no saved cookies, or they expired - do manual login.
         self.login_with_google()
 
     @staticmethod
@@ -562,16 +563,41 @@ class CourseraDownloader:
     def _switch_video_quality_to_hd(self):
         """Attempt to switch the video player quality to HD via UI interaction."""
         try:
-            # 1. Find a video player container and hover.
-            try:
-                video_player = self.driver.find_element(By.CSS_SELECTOR, ".rc-VideoPlayer, .c-video-player")
-                from selenium.webdriver.common.action_chains import ActionChains
-                ActionChains(self.driver).move_to_element(video_player).perform()
-                time.sleep(1)
-            except (NoSuchElementException, StaleElementReferenceException):
-                pass  # Hovering is optional.
+            from selenium.webdriver.common.action_chains import ActionChains
 
-            # 2. Click Settings (Gear Icon).
+            # 1. Find video player components
+            video_player = None
+            control_bar = None
+            
+            try:
+                # Try finding the main player container
+                video_player = self.driver.find_element(By.CSS_SELECTOR, "[data-testid='playerContainer']")
+            except NoSuchElementException:
+                try:
+                    video_player = self.driver.find_element(By.CSS_SELECTOR, ".rc-VideoPlayer, .c-video-player, .vjs-react")
+                except NoSuchElementException:
+                    pass
+
+            try:
+                # Try finding the control bar specifically
+                control_bar = self.driver.find_element(By.CSS_SELECTOR, "[data-testid='video-control-bar'], .vjs-control-bar")
+            except NoSuchElementException:
+                pass
+
+            # 2. Perform hover action
+            if video_player:
+                try:
+                    actions = ActionChains(self.driver)
+                    actions.move_to_element(video_player)
+                    # If we found the control bar, move to it as well to be safe
+                    if control_bar:
+                        actions.move_to_element(control_bar)
+                    actions.perform()
+                    time.sleep(1) # Wait for UI to react
+                except WebDriverException:
+                    pass
+
+            # 3. Click Settings (Gear Icon).
             print("  ⚙ Opening video settings...")
             settings_btn = None
             settings_selectors = [
@@ -584,25 +610,44 @@ class CourseraDownloader:
             for selector in settings_selectors:
                 try:
                     buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    # First try to find a visible button
                     for btn in buttons:
                         if btn.is_displayed():
                             settings_btn = btn
                             break
+                    
+                    # If no visible button, take the first present one (and force click it later)
+                    if not settings_btn and buttons:
+                        print("  ⚠ Settings button found but hidden, attempting force click...")
+                        settings_btn = buttons[0]
+                        
                     if settings_btn: break
                 except (NoSuchElementException, StaleElementReferenceException):
                     continue
             
             if not settings_btn:
-                print("  ⚠ Settings button not found")
+                print("  ⚠ Settings button not found in DOM")
                 return
+
+            # Re-hover if needed before clicking
+            if video_player and not settings_btn.is_displayed():
+                 try:
+                    ActionChains(self.driver).move_to_element(video_player).perform()
+                    time.sleep(0.5)
+                 except WebDriverException:
+                    pass  # Ignore hover errors if player disappeared
 
             try:
                 self.driver.execute_script("arguments[0].click();", settings_btn)
             except JavascriptException:
-                settings_btn.click()
+                try:
+                    settings_btn.click()
+                except WebDriverException as e:
+                    print(f"  ⚠ Failed to click settings button: {e}")
+                    return
             time.sleep(1)
             
-            # 3. Find the "Quality" menu item.
+            # 4. Find the "Quality" menu item.
             print("  ⚙ Finding Quality menu...")
             quality_menu = None
             quality_selectors = [
@@ -678,6 +723,8 @@ class CourseraDownloader:
              return True, 1
 
         # 2. Strategy: Check the "Downloads" section buttons first (often the clearest source)
+        download_buttons = []
+        best_href = None
         try:
             download_buttons = self.driver.find_elements(By.XPATH,
                 "//a[contains(text(), 'Download') and (contains(@href, '.mp4') or contains(@href, 'video'))]")
@@ -777,7 +824,7 @@ class CourseraDownloader:
                  print(f"  ⚠ yt-dlp manifest download failed: {e}")
         
         # 7. Strategy: yt-dlp on Page URL (Retry, might work if extractor updated)
-        # Skip this if we already tried the manifest and it failed; it likely won't work either.
+        # Skip this if we already tried the manifest, and it failed; it likely won't work either.
         if not manifest_url:
             print(f"  ⬇ Trying high-quality download with yt-dlp (Page URL)...")
             try:
@@ -805,8 +852,8 @@ class CourseraDownloader:
                         if self.download_file(href, main_video_file):
                             print(f"  ✓ Video saved: {main_video_file.name}")
                             return True, 1
-        except:
-            pass
+        except WebDriverException as e:
+            print(f"  ⚠ Error in fallback download: {e}")
 
         return downloaded_something, downloaded_count
 
@@ -1651,17 +1698,17 @@ class CourseraDownloader:
                 
                 # Check if we need to rename any found items to the correct prefix
                 for item in existing_items:
-                    # If it has a prefix but it's the wrong one, rename it
+                    # If it has a prefix, but it's the wrong one, rename it
                     if len(item.name) > 4 and item.name[3] == '_' and not item.name.startswith(f"{item_counter:03d}_"):
                         # Construct the target filename with the correct prefix
                         target_filename = f"{item_counter:03d}_{item.name[4:]}"
                         # _get_or_move_path handles the actual move/rename and prefix correction
                         item_file = self._get_or_move_path(course_dir, module_dir, target_filename)
-                        downloaded_files.add(item_file)
+                        downloaded_files.add(str(item_file))
                     else:
                         # Exact match or already corrected
                         item_file = self._get_or_move_path(course_dir, module_dir, item.name)
-                        downloaded_files.add(item_file)
+                        downloaded_files.add(str(item_file))
                     
                     materials_downloaded += 1
                 return 0  # Return 0 since we're not downloading anything new
