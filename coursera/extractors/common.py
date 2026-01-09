@@ -61,6 +61,11 @@ class AssetManager:
                     if not base_name or len(base_name) < 2:
                         base_name = "style"
                     
+                    # Truncate base_name to prevent excessively long filenames.
+                    MAX_BASENAME_LEN = 60
+                    if len(base_name) > MAX_BASENAME_LEN:
+                        base_name = base_name[:MAX_BASENAME_LEN]
+                    
                     # Include a hash to avoid collisions while keeping the name descriptive.
                     css_hash = hashlib.md5(href.encode()).hexdigest()[:8]
                     css_filename = f"{sanitize_filename(base_name)}_{css_hash}.css"
@@ -130,6 +135,12 @@ class AssetManager:
                         base_name = Path(url_filename).stem
                         if not base_name or len(base_name) < 2:
                             base_name = "image"
+                        
+                        # Truncate base_name to prevent excessively long filenames.
+                        # This balances descriptiveness with OS filename length limits.
+                        MAX_BASENAME_LEN = 60
+                        if len(base_name) > MAX_BASENAME_LEN:
+                            base_name = base_name[:MAX_BASENAME_LEN]
                         
                         # Fetch the image to get its hash for deduplication.
                         try:

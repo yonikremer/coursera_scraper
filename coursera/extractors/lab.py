@@ -612,6 +612,7 @@ class LabExtractor:
                     ipynb_files.append(item)
                 else:
                     # Move to shared assets
+                    
                     # Combine original name with hash for descriptive uniqueness
                     try:
                         item_hash = hashlib.md5(item.read_bytes()).hexdigest()[:8]
@@ -619,7 +620,13 @@ class LabExtractor:
                         print(f"    ⚠ Could not read file {item.name} for hashing: {e}")
                         continue
                     
-                    target_shared_name = f"{sanitize_filename(item.stem)}_{item_hash}{item.suffix}"
+                    # Truncate the original stem to prevent excessively long filenames.
+                    MAX_BASENAME_LEN = 60
+                    stem = sanitize_filename(item.stem)
+                    if len(stem) > MAX_BASENAME_LEN:
+                        stem = stem[:MAX_BASENAME_LEN]
+                    
+                    target_shared_name = f"{stem}_{item_hash}{item.suffix}"
                     target_shared_path = self.labs_shared_assets_dir / target_shared_name
                     
                     try:
