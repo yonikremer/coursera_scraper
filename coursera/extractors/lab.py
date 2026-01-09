@@ -33,44 +33,50 @@ class LabExtractor:
             dots = "../" * depth
             
             with open(ipynb_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+                notebook_content = json.load(f)
             
             updated = False
-            for old_name, target_shared_name in replacements.items():
-                # target_shared_name is just the filename in shared_assets/labs/
-                new_rel_path = f"{dots}shared_assets/labs/{target_shared_name}"
-                
-                # Check for various ways the file might be referenced
-                # 1. Quoted filename: "data.csv" -> "../../../shared_assets/labs/data.csv"
-                # 2. Path prefix: "data/data.csv" -> "../../../shared_assets/labs/data.csv"
-                
-                # We prioritize replacing the specific string found in lab_dir
-                # old_name could be "file.csv" or "data/file.csv"
-                
-                quoted_old = [f'"{old_name}"', f"'{old_name}'"]
-                for q in quoted_old:
-                    if q in content:
-                        content = content.replace(q, f'"{new_rel_path}"')
-                        updated = True
-                
-                # If not quoted, look for it as a standalone word/path part
-                # This is riskier but often needed for things like !cat data/file.csv
-                if not updated and old_name in content:
-                     # Check if it looks like a path or filename
-                     # We only replace if it's not already part of a shared_assets path
-                     if f"shared_assets/labs/{target_shared_name}" not in content:
-                         # Be conservative: only replace if it's preceded by space, quote, or start of line
-                         # but for simplicity let's try a direct replace if it's long enough
-                         if len(old_name) > 4:
-                             content = content.replace(old_name, new_rel_path)
-                             updated = True
+            for cell in notebook_content.get("cells", []):
+                if "source" in cell and isinstance(cell["source"], list):
+                    source_lines = cell["source"]
+                    new_source_lines = []
+                    for line in source_lines:
+                        original_line = line
+                        for old_name, target_shared_name in replacements.items():
+                            new_rel_path = f"{dots}shared_assets/labs/{target_shared_name}"
+                            
+                            # Create a regex pattern to match the old_name in various contexts
+                            # This handles:
+                            # 1. Quoted paths: "old_name", 'old_name'
+                            # 2. Paths with escaped backslashes: "path\\to\\old_name"
+                            # 3. Unquoted paths: old_name (less common in structured data but possible)
+                            # We need to escape old_name for regex
+                            escaped_old_name = re.escape(old_name)
+                            
+                            # Pattern for quoted paths (single or double quotes)
+                            # Group 1: opening quote, Group 2: old_name, Group 3: closing quote
+                            # Use non-greedy matching for contents of quotes
+                            # Added a check for '/../' so it doesn't accidentally replace a name in the path
+                            pattern_quoted = rf'(["\'])(?:(?!\.\.\/).)*?{escaped_old_name}(["\'])'
+                            line = re.sub(pattern_quoted, rf'\1{new_rel_path}\2', line, flags=re.IGNORECASE)
+
+                            # Pattern for unquoted paths (more aggressive, only if not already replaced)
+                            if escaped_old_name in line and not new_rel_path in line:
+                                # Ensure we don't replace parts of a new_rel_path that might contain old_name
+                                if not re.search(rf'shared_assets/labs/{escaped_old_name}', line):
+                                     line = re.sub(escaped_old_name, new_rel_path, line, flags=re.IGNORECASE)
+                            
+                        if original_line != line:
+                            updated = True
+                        new_source_lines.append(line)
+                    cell["source"] = new_source_lines
             
             if updated:
                 with open(ipynb_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
+                    json.dump(notebook_content, f, indent=4)
                 print(f"    ✓ Updated references in {ipynb_path.name}")
                 
-        except (IOError, UnicodeDecodeError) as e:
+        except (IOError, UnicodeDecodeError, json.JSONDecodeError) as e:
             print(f"    ⚠ Error updating references in {ipynb_path.name}: {e}")
 
     def _sanitize_and_rename_files(self, directory: Path) -> int:
