@@ -603,7 +603,7 @@ class LabExtractor:
                         except zipfile.BadZipFile:
                             print(f"  ⚠ {downloaded_zip_file.name} is corrupted. Ignoring.")
                             downloaded_zip_file.unlink(missing_ok=True)
-                        except Exception as e:
+                        except OSError as e: # Catch file system errors during extraction or cleanup
                             print(f"  ⚠ Error during zip extraction or cleanup: {e}")
                             if downloaded_zip_file.exists():
                                 downloaded_zip_file.unlink(missing_ok=True) # Try to delete even if extraction failed.
@@ -710,10 +710,15 @@ class LabExtractor:
             else:
                 print(f"  ⚠ No files downloaded for this lab.")
 
-        except Exception as e:
+        except (WebDriverException, TimeoutException, OSError, IOError, json.JSONDecodeError) as e:
             print(f"  ⚠ Error processing lab: {e}")
             import traceback
             traceback.print_exc()
+        except Exception as e: # Catch any remaining unforeseen exceptions
+            print(f"  ❌ An unexpected critical error occurred during lab processing: {e}")
+            import traceback
+            traceback.print_exc()
+
         finally:
             # Clean up: close the lab tab and switch back to the original window.
             if lab_window and original_window:
