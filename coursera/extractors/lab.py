@@ -104,10 +104,10 @@ class LabExtractor:
                     count += 1
         return count
 
-    def _download_individual_files(self, lab_dir: Path) -> int:
+    def _download_individual_files(self, lab_dir: Path) -> list[Path]:
         """Fallback: Download files one by one from the side panel."""
         print("  ⚠ 'Download all files' failed or timed out. Attempting individual downloads...")
-        downloaded_count = 0
+        downloaded_files_paths = []
         
         try:
             # Find the file list container. 
@@ -178,7 +178,7 @@ class LabExtractor:
                         potential_file = self.download_dir / filename
                         if potential_file.exists():
                             shutil.move(str(potential_file), str(target_path))
-                            downloaded_count += 1
+                            downloaded_files_paths.append(target_path)
                             print(f"    ✓ Downloaded: {filename}")
                             break
 
@@ -186,7 +186,7 @@ class LabExtractor:
                         user_downloads = Path.home() / "Downloads" / filename
                         if user_downloads.exists():
                             shutil.move(str(user_downloads), str(target_path))
-                            downloaded_count += 1
+                            downloaded_files_paths.append(target_path)
                             print(f"    ✓ Downloaded (from home Downloads): {filename}")
                             break
                         time.sleep(1)
@@ -197,22 +197,22 @@ class LabExtractor:
         except WebDriverException as e:
             print(f"  ⚠ Error during individual download: {e}")
             
-        return downloaded_count
+        return downloaded_files_paths
 
-    def _download_via_selection(self, lab_dir: Path) -> int:
+    def _download_via_selection(self, lab_dir: Path) -> list[Path]:
         """
         Downloads files one by one by selecting them individually and clicking Download.
-        Returns the number of files downloaded.
+        Returns a list of paths to the downloaded files.
         """
         print("  Attempting download via individual file selection...")
-        downloaded_count = 0
+        downloaded_files_paths = []
         
         try:
             # Initial find of checkboxes
             checkboxes = self.driver.find_elements(By.XPATH, "//input[@type='checkbox']")
             if not checkboxes:
                 print("  ℹ No checkboxes found.")
-                return 0
+                return []
 
             # We need to re-find elements in the loop to avoid staleness, 
             # so we'll just loop by index.
@@ -283,7 +283,7 @@ class LabExtractor:
                             potential_file = self.download_dir / filename_raw
                             if potential_file.exists():
                                 shutil.move(str(potential_file), str(target_path))
-                                downloaded_count += 1
+                                downloaded_files_paths.append(target_path)
                                 print(f"    ✓ Downloaded: {filename_raw}")
                                 file_downloaded = True
                                 break
@@ -292,7 +292,7 @@ class LabExtractor:
                             user_downloads = Path.home() / "Downloads" / filename_raw
                             if user_downloads.exists():
                                 shutil.move(str(user_downloads), str(target_path))
-                                downloaded_count += 1
+                                downloaded_files_paths.append(target_path)
                                 print(f"    ✓ Downloaded (from home Downloads): {filename_raw}")
                                 file_downloaded = True
                                 break
@@ -316,16 +316,16 @@ class LabExtractor:
                      print(f"    ⚠ Error downloading file index {i}: {e}")
                      continue
 
-            if downloaded_count > 0:
-                print(f"  ✓ Downloaded {downloaded_count} files via selection.")
+            if len(downloaded_files_paths) > 0:
+                print(f"  ✓ Downloaded {len(downloaded_files_paths)} files via selection.")
             else:
                  print("  ℹ No files downloaded via selection.")
 
-            return downloaded_count
+            return downloaded_files_paths
 
         except WebDriverException as e:
             print(f"  ⚠ Error in _download_via_selection: {e}")
-            return downloaded_count
+            return downloaded_files_paths
 
     def process(self, course_dir: Path, module_dir: Path, item_counter: int,
                          title: str, item_url: str) -> Tuple[bool, int]:
@@ -465,14 +465,16 @@ class LabExtractor:
                 # Don't raise, just return, maybe manual intervention needed
                 return downloaded_something, downloaded_count
 
-            # Try to download via selection first (User preference)
-            files_downloaded_via_selection = self._download_via_selection(lab_dir)
-            zip_downloaded = False
+            downloaded_files_in_lab = [] # Collect all downloaded files
             
-            if files_downloaded_via_selection > 0:
-                downloaded_count += files_downloaded_via_selection
+            # Try to download via selection first (User preference)
+            files_downloaded_via_selection_paths = self._download_via_selection(lab_dir)
+            if files_downloaded_via_selection_paths:
+                downloaded_files_in_lab.extend(files_downloaded_via_selection_paths)
                 downloaded_something = True
-            else:
+            
+            zip_downloaded = False
+            if not files_downloaded_via_selection_paths: # Only try zip if selection failed
                 # Fallback: Download all files button
                 print(f"  Looking for 'Download all files' button (Fallback)...")
                 download_all_btn = None
@@ -520,6 +522,15 @@ class LabExtractor:
                             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                                 zip_ref.extractall(lab_dir)
 
+                            
+                            # Add all extracted files to the downloaded_files_in_lab list
+                            # Iterate through the zip file's contents to get relative paths
+                            # The files are extracted into lab_dir, so we need to get their full paths.
+                            for member in zip_ref.namelist():
+                                full_path_in_lab = lab_dir / member
+                                if full_path_in_lab.is_file():
+                                    downloaded_files_in_lab.append(full_path_in_lab)
+
                             # Identify the deepest directory that contains actual files
                             # Often it's Files/home/jovyan/work/
                             # We want to find the first directory that has more than one child 
@@ -538,20 +549,36 @@ class LabExtractor:
                                 content_root = find_content_root(lab_dir)
                                 if content_root != lab_dir:
                                     print(f"  📁 Flattening directory structure from: {content_root.relative_to(lab_dir)}")
-                                    # Move all items from content_root to lab_dir
-                                    for item in content_root.iterdir():
-                                        dest = lab_dir / item.name
-                                        if not dest.exists():
-                                            shutil.move(str(item), str(dest))
-                                            downloaded_count += 1
                                     
+                                    # Create a temporary list to store files being moved, to avoid modifying
+                                    # downloaded_files_in_lab while iterating if any of them are in content_root
+                                    files_to_readd = []
+                                    files_to_remove = []
+
+                                    for item in content_root.iterdir():
+                                        if item.is_file() or (item.is_dir() and item.name != ".ipynb_checkpoints"): # Do not move checkpoint folders directly
+                                            dest = lab_dir / item.name
+                                            if not dest.exists():
+                                                shutil.move(str(item), str(dest))
+                                                # Mark for removal from the old path and addition with the new path
+                                                for i, old_item_path in enumerate(downloaded_files_in_lab):
+                                                    if old_item_path == item:
+                                                        files_to_remove.append(item)
+                                                        break
+                                                files_to_readd.append(dest)
+                                                
+                                    for f in files_to_remove:
+                                        downloaded_files_in_lab.remove(f)
+                                    downloaded_files_in_lab.extend(files_to_readd)
+
                                     # Cleanup the now redundant top-level "Files" or similar
-                                    redundant_top = lab_dir / list(lab_dir.iterdir())[0].name
-                                    if redundant_top.is_dir() and (redundant_top.name == "Files" or redundant_top.name == "home"):
-                                        shutil.rmtree(redundant_top)
+                                    # Check for actual contents before removing, in case it was a single file moved
+                                    if not list(content_root.iterdir()): # Only remove if empty
+                                        shutil.rmtree(content_root)
+
                             except Exception as e:
                                 print(f"    ⚠ Error while flattening: {e}")
-
+                            
                             # Delete the zip file.
                             zip_file.unlink()
                             print(f"  ✓ Deleted Files.zip")
@@ -563,69 +590,58 @@ class LabExtractor:
                             zip_file.unlink(missing_ok=True)
 
             # Fallback to individual files if zip failed
-            if not zip_downloaded:
+            if not zip_downloaded and not files_downloaded_via_selection_paths: # Only try individual if selection/zip failed
                 print(f"  ⚠ Zip download failed or skipped. Trying individual files...")
-                count = self._download_individual_files(lab_dir)
-                downloaded_count += count
-                if count > 0:
+                individual_downloaded_paths = self._download_individual_files(lab_dir)
+                if individual_downloaded_paths:
+                    downloaded_files_in_lab.extend(individual_downloaded_paths)
                     downloaded_something = True
-
-            # Normalize filenames (requested by user)
-            # This applies to files from zip OR individual downloads
-            print(f"  🧹 Normalizing filenames...")
-            renamed_count = self._sanitize_and_rename_files(lab_dir)
-            if renamed_count > 0:
-                print(f"  ✓ Normalized {renamed_count} files.")
 
             # --- Shared Assets Migration ---
             print(f"  📦 Migrating shared assets...")
             replacements = {}
             ipynb_files = []
             
-            # 1. Identify ipynb files and other assets
-            for item in list(lab_dir.rglob("*")):
+            # Iterate through all files that were downloaded into the lab_dir or extracted there.
+            # We iterate a copy because items might be unlinked during the loop.
+            for item in list(downloaded_files_in_lab):
                 if not item.is_file(): continue
-                if item.name == "lab_info.txt": continue
-                
+                if item.name == "lab_info.txt": continue # Skip internal files
+
                 if item.suffix.lower() == ".ipynb":
                     ipynb_files.append(item)
                 else:
                     # Move to shared assets
-                    target_shared_path = self.labs_shared_assets_dir / item.name
+                    # Combine original name with hash for descriptive uniqueness
+                    try:
+                        item_hash = hashlib.md5(item.read_bytes()).hexdigest()[:8]
+                    except IOError as e:
+                        print(f"    ⚠ Could not read file {item.name} for hashing: {e}")
+                        continue
+                    
+                    target_shared_name = f"{sanitize_filename(item.stem)}_{item_hash}{item.suffix}"
+                    target_shared_path = self.labs_shared_assets_dir / target_shared_name
                     
                     try:
-                        # Collision handling
-                        if target_shared_path.exists():
-                            # If file exists but is different, we might need a unique name
-                            # For Coursera, usually same name means same shared file
-                            # but let's be safe-ish.
-                            import hashlib
-                            def get_hash(p):
-                                h = hashlib.md5()
-                                with open(p, 'rb') as f:
-                                    for chunk in iter(lambda: f.read(4096), b""):
-                                        h.update(chunk)
-                                return h.hexdigest()
-                            
-                            if get_hash(item) != get_hash(target_shared_path):
-                                # Different content, use a hashed name
-                                stem = item.stem
-                                suffix = item.suffix
-                                file_hash = get_hash(item)[:8]
-                                target_shared_path = self.labs_shared_assets_dir / f"{stem}_{file_hash}{suffix}"
-                        
+                        # Only copy if it doesn't already exist in shared assets
                         if not target_shared_path.exists():
                             shutil.copy2(item, target_shared_path)
+                            downloaded_count += 1 # Count actual new downloads to shared assets
                         
-                        # Store replacement (just the shared filename, _update_ipynb_references handles dots)
-                        replacements[item.name] = target_shared_path.name
+                        # Store replacement mapping for ipynb files
+                        # The key should be the path relative to the ipynb file's original location
+                        # The value is the new shared asset filename
                         
-                        # Also track the path if it was in a subfolder
-                        item_depth = len(item.relative_to(lab_dir).parts) - 1
-                        if item_depth > 0:
-                            # e.g. "data/file.csv" -> "file.csv"
-                            rel_item_path = str(item.relative_to(lab_dir)).replace("\\", "/")
-                            replacements[rel_item_path] = target_shared_path.name
+                        # Add relative path from lab_dir
+                        try:
+                            rel_path_in_lab = str(item.relative_to(lab_dir)).replace("\\", "/")
+                            replacements[rel_path_in_lab] = target_shared_name
+                        except ValueError:
+                            # If item is not relative to lab_dir (e.g., already moved by flatten)
+                            pass 
+
+                        # Also add simple filename
+                        replacements[item.name] = target_shared_name
                         
                         # Delete original to save space
                         item.unlink()
@@ -635,8 +651,10 @@ class LabExtractor:
             # 2. Update references in notebooks
             for ipynb in ipynb_files:
                 self._update_ipynb_references(ipynb, replacements)
-                
+            
             # 3. Clean up empty subdirectories
+            # This needs to be done AFTER all files have potentially been moved out.
+            # The existing logic should work for this.
             for root, dirs, files in os.walk(lab_dir, topdown=False):
                 for name in dirs:
                     dir_path = Path(root) / name
@@ -654,6 +672,9 @@ class LabExtractor:
                         shutil.rmtree(checkpoint_dir)
                     except OSError:
                         pass
+
+            if len(downloaded_files_in_lab) > 0:
+                downloaded_something = True
 
             if downloaded_something:
                 print(f"  ✓ Lab processing complete")

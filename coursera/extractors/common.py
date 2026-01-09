@@ -56,10 +56,14 @@ class AssetManager:
                     href = link.get_attribute('href')
                     if not href or not href.startswith('http'): continue
                     
-                    css_filename = sanitize_filename(href.split('/')[-1].split('?')[0])
-                    if not css_filename.endswith('.css'): css_filename += ".css"
-                    if len(css_filename) > 100 or len(css_filename) < 5: 
-                        css_filename = f"style_{hashlib.md5(href.encode()).hexdigest()[:10]}.css"
+                    url_filename = href.split('/')[-1].split('?')[0]
+                    base_name = Path(url_filename).stem
+                    if not base_name or len(base_name) < 2:
+                        base_name = "style"
+                    
+                    # Include a hash to avoid collisions while keeping the name descriptive.
+                    css_hash = hashlib.md5(href.encode()).hexdigest()[:8]
+                    css_filename = f"{sanitize_filename(base_name)}_{css_hash}.css"
                     
                     css_path = css_dir / css_filename
                     if download_file(href, css_path, self.session):
@@ -120,6 +124,12 @@ class AssetManager:
                         # Determine extension.
                         ext = src.split('?')[0].split('.')[-1] if '.' in src.split('?')[0] else "png"
                         if len(ext) > 4 or not ext.isalnum(): ext = "png"
+
+                        # Extract filename from URL for better readability.
+                        url_filename = src.split('/')[-1].split('?')[0]
+                        base_name = Path(url_filename).stem
+                        if not base_name or len(base_name) < 2:
+                            base_name = "image"
                         
                         # Fetch the image to get its hash for deduplication.
                         try:
@@ -130,9 +140,10 @@ class AssetManager:
                             print(f"  ⚠ Failed to fetch image {src}: {e}")
                             continue
 
-                        # Hash image content.
+                        # Hash image content for deduplication.
                         content_hash = hashlib.md5(img_content).hexdigest()
-                        img_name = f"{content_hash}.{ext}"
+                        # Include both base name and hash to ensure uniqueness while remaining descriptive.
+                        img_name = f"{sanitize_filename(base_name)}_{content_hash[:8]}.{ext}"
                         img_path = global_images_dir / img_name
                         
                         # Save if it doesn't exist.
