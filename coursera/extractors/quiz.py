@@ -133,6 +133,17 @@ class QuizExtractor:
             self.driver.execute_script("""
                 const aiInstructions = document.querySelectorAll('[data-ai-instructions="true"]');
                 aiInstructions.forEach(el => el.remove());
+
+                // Remove messy quiz footer elements (Like/Dislike, Honor Code, Submit, Save Draft)
+                const messySelectors = [
+                    '[data-testid="like-button"]',
+                    '[data-testid="dislike-button"]',
+                    '[data-e2e="AttemptSubmitControls"]',
+                    '[aria-label="Text Formatting"]'
+                ];
+                messySelectors.forEach(selector => {
+                    document.querySelectorAll(selector).forEach(el => el.remove());
+                });
             """)
         except JavascriptException:
             pass  # Script failure is non-critical.

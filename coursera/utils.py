@@ -1,22 +1,46 @@
 import re
 
 def sanitize_filename(filename: str) -> str:
-    """Remove invalid characters from the filename, convert to lowercase with underscores."""
+    """
+    Sanitize filename to ensure strict compliance:
+    - Lowercase only.
+    - Only a-z, 0-9, and underscores.
+    - Exactly one dot separating name and extension.
+    """
     if not filename:
         return "untitled"
-    # Replace invalid characters and punctuation with underscores.
-    sanitized = re.sub(r'[<>:"/\\|?*,!]', '_', filename)
-    # Handle ellipsis and multiple dots (replace with single underscore).
-    sanitized = re.sub(r'\.{2,}', '_', sanitized)
-    # Replace spaces and hyphens with underscores.
-    sanitized = sanitized.replace(' ', '_').replace('-', '_')
-    # Convert to lowercase.
-    sanitized = sanitized.lower()
-    # Remove multiple consecutive underscores.
-    sanitized = re.sub(r'_+', '_', sanitized)
-    # Strip leading/trailing underscores.
-    sanitized = sanitized.strip('_')
-    return sanitized or "untitled"
+
+    # Separate extension if present
+    parts = filename.rsplit('.', 1)
+    
+    if len(parts) == 2:
+        name, ext = parts
+        # If the 'extension' is too long or has invalid chars, treat it as part of the name
+        # Standard extensions are usually short (2-4 chars), but we can be generous (e.g., .ipynb, .html)
+        if len(ext) > 5 or not re.match(r'^[a-z0-9]+$', ext.lower()):
+            name = filename
+            ext = ""
+    else:
+        name = parts[0]
+        ext = ""
+
+    # Sanitize the name part
+    # Replace non-alphanumeric characters with underscores
+    name = re.sub(r'[^a-z0-9]+', '_', name.lower())
+    # Remove multiple underscores
+    name = re.sub(r'_+', '_', name)
+    # Strip leading/trailing underscores
+    name = name.strip('_')
+    
+    if not name:
+        name = "untitled"
+
+    # Sanitize extension (lowercase, alphanumeric only)
+    if ext:
+        ext = re.sub(r'[^a-z0-9]+', '', ext.lower())
+        return f"{name}.{ext}"
+    
+    return name
 
 def extract_slug(item_url: str) -> str:
     """Extract a meaningful slug from Coursera URL."""

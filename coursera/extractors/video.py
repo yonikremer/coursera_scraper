@@ -199,6 +199,22 @@ class VideoExtractor:
         downloaded_count = 0
         downloaded_something = False
 
+        # Try to remove messy elements before processing.
+        try:
+            self.driver.execute_script("""
+                const messySelectors = [
+                    '[data-ai-instructions="true"]',
+                    '[data-testid="like-button"]',
+                    '[data-testid="dislike-button"]',
+                    '[aria-label="Text Formatting"]'
+                ];
+                messySelectors.forEach(selector => {
+                    document.querySelectorAll(selector).forEach(el => el.remove());
+                });
+            """)
+        except:
+            pass
+
         # 1. Determine the target filename for the main video
         main_filename = f"{item_counter:03d}_{title}.mp4"
         main_video_file = get_or_move_path(course_dir, module_dir, main_filename)

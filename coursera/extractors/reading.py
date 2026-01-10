@@ -27,6 +27,19 @@ class ReadingExtractor:
             for selector in ["div[class*='rc-CML']", "div[class*='content']", "div[role='main']",
                            "article", "main"]:
                 try:
+                    # Remove messy elements before extraction.
+                    self.driver.execute_script("""
+                        const messySelectors = [
+                            '[data-ai-instructions="true"]',
+                            '[data-testid="like-button"]',
+                            '[data-testid="dislike-button"]',
+                            '[aria-label="Text Formatting"]'
+                        ];
+                        messySelectors.forEach(selector => {
+                            document.querySelectorAll(selector).forEach(el => el.remove());
+                        });
+                    """)
+                    
                     elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     inner_html = elem.get_attribute('innerHTML')
                     if inner_html and len(inner_html) > 100:
