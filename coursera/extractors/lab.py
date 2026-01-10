@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Tuple
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, \
+    WebDriverException
 from ..files import get_or_move_path
 from ..utils import extract_slug, sanitize_filename
+
 
 class LabExtractor:
     def __init__(self, driver, download_dir: Path, shared_assets_dir: Path):
@@ -29,12 +31,20 @@ class LabExtractor:
         try:
             # Calculate depth from coursera_downloads root
             # ipynb_path is coursera_downloads/course/module_n/lab_dir/file.ipynb
-            # We want to go up to coursera_downloads/
             depth = len(ipynb_path.parent.relative_to(self.download_dir).parts)
             dots = "../" * depth
 
             with open(ipynb_path, 'r', encoding='utf-8') as f:
                 notebook_content = json.load(f)
+
+            # Pre-calculate replacement values to avoid repeated string concatenation
+            final_replacements = {}
+            for old_name, target_shared_name in replacements.items():
+                new_rel_path = f"{dots}shared_assets/labs/{target_shared_name}"
+                # Add variations for matching
+                final_replacements[old_name] = new_rel_path
+                # Add variation with backslashes for JSON/Windows context
+                final_replacements[old_name.replace("/", "\\\\")] = new_rel_path.replace("/", "\\\\")
 
             updated = False
             for cell in notebook_content.get("cells", []):
@@ -43,29 +53,21 @@ class LabExtractor:
                     new_source_lines = []
                     for line in source_lines:
                         original_line = line
-                        for old_name, target_shared_name in replacements.items():
-                            new_rel_path = f"{dots}shared_assets/labs/{target_shared_name}"
+                        for old_path, new_rel_path in final_replacements.items():
+                            escaped_old_path = re.escape(old_path)
+                            
+                            # 1. Match src attributes in HTML tags: src="old_path" or src='old_path'
+                            # This handles the user's specific example: <img src="images/Plan.png" ...>
+                            pattern_html_src = rf'(src\s*=\s*)(["\']){escaped_old_path}(["\'])'
+                            line = re.sub(pattern_html_src, rf'\1\2{new_rel_path}\3', line, flags=re.IGNORECASE)
 
-                            # Create a regex pattern to match the old_name in various contexts
-                            # This handles:
-                            # 1. Quoted paths: "old_name", 'old_name'
-                            # 2. Paths with escaped backslashes: "path\\to\\old_name"
-                            # 3. Unquoted paths: old_name (less common in structured data but possible)
-                            # We need to escape old_name for regex
-                            escaped_old_name = re.escape(old_name)
+                            # 2. Match standard Markdown image/link syntax: [text](old_path)
+                            pattern_markdown = rf'(\!\[.*?\]\()({escaped_old_path})(\))'
+                            line = re.sub(pattern_markdown, rf'\1{new_rel_path}\3', line, flags=re.IGNORECASE)
 
-                            # Pattern for quoted paths (single or double quotes)
-                            # Group 1: opening quote, Group 2: old_name, Group 3: closing quote
-                            # Use non-greedy matching for contents of quotes
-                            # Added a check for '/../' so it doesn't accidentally replace a name in the path
-                            pattern_quoted = rf'(["\'])(?:(?!\.\.\/).)*?{escaped_old_name}(["\'])'
+                            # 3. Fallback: Match quoted strings that look like the path
+                            pattern_quoted = rf'(["\']){escaped_old_path}(["\'])'
                             line = re.sub(pattern_quoted, rf'\1{new_rel_path}\2', line, flags=re.IGNORECASE)
-
-                            # Pattern for unquoted paths (more aggressive, only if not already replaced)
-                            if escaped_old_name in line and not new_rel_path in line:
-                                # Ensure we don't replace parts of a new_rel_path that might contain old_name
-                                if not re.search(rf'shared_assets/labs/{escaped_old_name}', line):
-                                     line = re.sub(escaped_old_name, new_rel_path, line, flags=re.IGNORECASE)
 
                         if original_line != line:
                             updated = True
@@ -80,7 +82,6 @@ class LabExtractor:
         except (IOError, UnicodeDecodeError, json.JSONDecodeError) as e:
             print(f"    ⚠ Error updating references in {ipynb_path.name}: {e}")
 
-
     def _download_individual_files(self, lab_dir: Path) -> list[Path]:
         """Fallback: Download files one by one from the side panel."""
         print("  ⚠ 'Download all files' failed or timed out. Attempting individual downloads...")
@@ -94,17 +95,19 @@ class LabExtractor:
             # Common selectors for file links in Coursera/Jupyter sidebars
             # They often have 'download' attribute or href pointing to /files/
             file_links = self.driver.find_elements(By.XPATH,
-                "//div[contains(@class, 'rc-LabFile')]//a | " +
-                "//a[contains(@class, 'file-link')] | " +
-                "//li//a[contains(@href, '/files/')]"
-            )
+                                                   "//div[contains(@class, 'rc-LabFile')]//a | " +
+                                                   "//a[contains(@class, 'file-link')] | " +
+                                                   "//li//a[contains(@href, '/files/')]"
+                                                   )
 
             if not file_links:
                 # Fallback: find ANY link in the sidebar that isn't the "Download all files" button
                 # Assuming the sidebar is the parent of the "Download all files" button
                 try:
-                    download_all_btn = self.driver.find_element(By.XPATH, "//button[contains(., 'Download all files')] ")
-                    sidebar = download_all_btn.find_element(By.XPATH, "./ancestor::div[contains(@class, 'rc-LabFiles')] | ./ancestor::div[contains(@class, 'c-modal-content')]")
+                    download_all_btn = self.driver.find_element(By.XPATH,
+                                                                "//button[contains(., 'Download all files')] ")
+                    sidebar = download_all_btn.find_element(By.XPATH,
+                                                            "./ancestor::div[contains(@class, 'rc-LabFiles')] | ./ancestor::div[contains(@class, 'c-modal-content')]")
                     file_links = sidebar.find_elements(By.TAG_NAME, "a")
                 except NoSuchElementException:
                     pass
@@ -117,7 +120,7 @@ class LabExtractor:
                     if href and href not in seen_hrefs and 'download_all' not in href:
                         # Filter out navigation links if possible
                         if '/tree/' in href or '/lab' in href:
-                            continue # likely a folder navigation or lab link
+                            continue  # likely a folder navigation or lab link
 
                         unique_links.append(link)
                         seen_hrefs.add(href)
@@ -219,7 +222,7 @@ class LabExtractor:
                     # We want just "Filename.ipynb"
                     filename_raw = Path(aria_label).name
                     if not filename_raw:
-                        filename_raw = f"file_{i}.dat" # Fallback
+                        filename_raw = f"file_{i}.dat"  # Fallback
 
                     filename_sanitized = sanitize_filename(Path(filename_raw).stem) + Path(filename_raw).suffix
                     target_path = lab_dir / filename_sanitized
@@ -253,7 +256,7 @@ class LabExtractor:
                         # 3. Wait for download
                         # Check downloads folder
                         file_downloaded = False
-                        for attempt in range(15): # Wait up to 15s
+                        for attempt in range(15):  # Wait up to 15s
                             # Check in configured download dir (coursera_downloads)
                             potential_file = self.download_dir / filename_raw
                             if potential_file.exists():
@@ -274,7 +277,7 @@ class LabExtractor:
                             time.sleep(1)
 
                         if not file_downloaded:
-                             print(f"    ⚠ Timeout waiting for: {filename_raw}")
+                            print(f"    ⚠ Timeout waiting for: {filename_raw}")
 
                     # 4. Deselect
                     # Re-find checkbox again just in case
@@ -288,13 +291,13 @@ class LabExtractor:
                             time.sleep(0.1)
 
                 except (WebDriverException, OSError) as e:
-                     print(f"    ⚠ Error downloading file index {i}: {e}")
-                     continue
+                    print(f"    ⚠ Error downloading file index {i}: {e}")
+                    continue
 
             if len(downloaded_files_paths) > 0:
                 print(f"  ✓ Downloaded {len(downloaded_files_paths)} files via selection.")
             else:
-                 print("  ℹ No files downloaded via selection.")
+                print("  ℹ No files downloaded via selection.")
 
             return downloaded_files_paths
 
@@ -303,7 +306,7 @@ class LabExtractor:
             return downloaded_files_paths
 
     def process(self, course_dir: Path, module_dir: Path, item_counter: int,
-                         title: str, item_url: str) -> Tuple[bool, int]:
+                title: str, item_url: str) -> Tuple[bool, int]:
         """Process and download Jupyter lab notebooks and data files."""
         downloaded_count = 0
         downloaded_something = False
@@ -353,8 +356,8 @@ class LabExtractor:
             for btn_text in ["Launch Lab", "Open Tool", "Launch", "Continue"]:
                 try:
                     launch_btn = self.driver.find_element(By.XPATH,
-                        f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]"
-                    )
+                                                          f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]"
+                                                          )
                     if launch_btn.is_displayed() and launch_btn.is_enabled():
                         print(f"  ✓ Clicking '{btn_text}'...")
                         launch_btn.click()
@@ -440,7 +443,7 @@ class LabExtractor:
                 # Don't raise, just return, maybe manual intervention needed
                 return downloaded_something, downloaded_count
 
-            downloaded_files_in_lab = [] # Collect all downloaded files
+            downloaded_files_in_lab = []  # Collect all downloaded files
 
             # Try to download via selection first (User preference)
             files_downloaded_via_selection_paths = self._download_via_selection(lab_dir)
@@ -449,7 +452,7 @@ class LabExtractor:
                 downloaded_something = True
 
             zip_downloaded = False
-            if not files_downloaded_via_selection_paths: # Only try zip if selection failed
+            if not files_downloaded_via_selection_paths:  # Only try zip if selection failed
                 # Fallback: Download all files button
                 print(f"  Looking for 'Download all files' button (Fallback)...")
                 download_all_btn = None
@@ -496,141 +499,75 @@ class LabExtractor:
                                 break
                         time.sleep(1)
 
-                                            if downloaded_zip_file and downloaded_zip_file.exists():
-
-                                                print(f"  ✓ Zip file downloaded: {downloaded_zip_file.name}")
-
-                                                
-
-                                                try:
-
-                                                    # Extract the zip file.
-
-                                                    print(f"  📦 Extracting {downloaded_zip_file.name}...")
-
-                                                    with zipfile.ZipFile(downloaded_zip_file, 'r') as zip_ref:
-
-                                                        zip_ref.extractall(lab_dir)
-
-                        
-
-                                                    # Identify the deepest directory that contains actual files
-
-                                                    # Often it's Files/home/jovyan/work/
-
-                                                    def find_content_root(current_path: Path):
-
-                                                        children = list(current_path.iterdir())
-
-                                                        visible_children = [c for c in children if not c.name.startswith('.')]
-
-                                                        if len(visible_children) == 1 and visible_children[0].is_dir():
-
-                                                            return find_content_root(visible_children[0])
-
-                                                        return current_path
-
-                        
-
-                                                    try:
-
-                                                        content_root = find_content_root(lab_dir)
-
-                                                        if content_root != lab_dir:
-
-                                                            print(f"  📁 Flattening directory structure from: {content_root.relative_to(lab_dir)}")
-
-                                                            for item in content_root.iterdir():
-
-                                                                dest = lab_dir / item.name
-
-                                                                if not dest.exists():
-
-                                                                    shutil.move(str(item), str(dest))
-
-                                                            
-
-                                                            # Cleanup the now redundant top-level "Files" or similar
-
-                                                            if not list(content_root.iterdir()):
-
-                                                                shutil.rmtree(content_root)
-
-                                                    except Exception as e:
-
-                                                        print(f"    ⚠ Error while flattening: {e}")
-
-                                                    
-
-                                                    zip_downloaded = True
-
-                                                    
-
-                                                except zipfile.BadZipFile:
-
-                                                    print(f"  ⚠ {downloaded_zip_file.name} is corrupted. Ignoring.")
-
-                                                except (OSError, ValueError) as e:
-
-                                                    print(f"  ⚠ Error during zip extraction or cleanup: {e}")
-
-                                                finally:
-
-                                                    # Always attempt to delete the zip file
-
-                                                    if downloaded_zip_file and downloaded_zip_file.exists():
-
-                                                        try:
-
-                                                            downloaded_zip_file.unlink()
-
-                                                            print(f"  ✓ Deleted {downloaded_zip_file.name}")
-
-                                                        except OSError as e:
-
-                                                            print(f"  ⚠ Could not delete {downloaded_zip_file.name}: {e}")
-
-                                                    
-
-                                                    # Proactive cleanup: remove any other Files*.zip
-
-                                                    for dir_path in [self.download_dir, Path.home() / "Downloads"]:
-
-                                                        try:
-
-                                                            for junk_zip in dir_path.glob("Files*.zip"):
-
-                                                                if junk_zip.exists():
-
-                                                                    junk_zip.unlink()
-
-                                                                    print(f"  🧹 Cleaned up junk zip: {junk_zip.name}")
-
-                                                        except (OSError, PermissionError):
-
-                                                            pass
-
-                                                        
-
-                                            else:
-
-                                                print(f"  ⚠ Zip file not found after download attempt.")
-
-                        
-
-                                    # Identify all files currently in lab_dir for migration (from zip OR individual downloads)
-
-                                    # We do this AFTER flattening to get correct paths.
-
-                                    downloaded_files_in_lab = [f for f in lab_dir.rglob("*") if f.is_file()]
-
-                                    if downloaded_files_in_lab:
-
-                                        downloaded_something = True
-
-                        
-
-                                    # --- Shared Assets Migration ---
+                        if downloaded_zip_file and downloaded_zip_file.exists():
+
+                            print(f"  ✓ Zip file downloaded: {downloaded_zip_file.name}")
+
+                            try:
+                                # Extract the zip file.
+                                print(f"  📦 Extracting {downloaded_zip_file.name}...")
+                                with zipfile.ZipFile(downloaded_zip_file, 'r') as zip_ref:
+                                    zip_ref.extractall(lab_dir)
+
+                                # Identify the deepest directory that contains actual files
+                                # Often it's Files/home/jovyan/work/
+                                def find_content_root(current_path: Path):
+                                    children = list(current_path.iterdir())
+                                    visible_children = [c for c in children if not c.name.startswith('.')]
+                                    if len(visible_children) == 1 and visible_children[0].is_dir():
+                                        return find_content_root(visible_children[0])
+                                    return current_path
+
+                                try:
+                                    content_root = find_content_root(lab_dir)
+                                    if content_root != lab_dir:
+                                        print(
+                                            f"  📁 Flattening directory structure from: {content_root.relative_to(lab_dir)}")
+                                        for item in content_root.iterdir():
+                                            dest = lab_dir / item.name
+                                            if not dest.exists():
+                                                shutil.move(str(item), str(dest))
+
+                                        # Clean up the now redundant top-level "Files" or similar
+                                        if not list(content_root.iterdir()):
+                                            shutil.rmtree(content_root)
+
+                                except Exception as e:
+                                    print(f"    ⚠ Error while flattening: {e}")
+
+                            except zipfile.BadZipFile:
+                                print(f"  ⚠ {downloaded_zip_file.name} is corrupted. Ignoring.")
+
+                            except (OSError, ValueError) as e:
+                                print(f"  ⚠ Error during zip extraction or cleanup: {e}")
+
+                            finally:
+                                # Always attempt to delete the zip file
+                                if downloaded_zip_file and downloaded_zip_file.exists():
+                                    try:
+                                        downloaded_zip_file.unlink()
+                                        print(f"  ✓ Deleted {downloaded_zip_file.name}")
+                                    except OSError as e:
+                                        print(f"  ⚠ Could not delete {downloaded_zip_file.name}: {e}")
+
+                                # Proactive cleanup: remove any other Files*.zip
+                                for dir_path in [self.download_dir, Path.home() / "Downloads"]:
+                                    try:
+                                        for junk_zip in dir_path.glob("Files*.zip"):
+                                            if junk_zip.exists():
+                                                junk_zip.unlink()
+                                                print(f"  🧹 Cleaned up junk zip: {junk_zip.name}")
+                                    except (OSError, PermissionError):
+                                        pass
+                        else:
+                            print(f"  ⚠ Zip file not found after download attempt.")
+
+                # Identify all files currently in lab_dir for migration (from zip OR individual downloads)
+                # We do this AFTER flattening to get correct paths.
+                downloaded_files_in_lab = [f for f in lab_dir.rglob("*") if f.is_file()]
+                if downloaded_files_in_lab:
+                    downloaded_something = True
+                # --- Shared Assets Migration ---
             print(f"  📦 Migrating shared assets...")
             replacements = {}
             ipynb_files = []
@@ -639,13 +576,11 @@ class LabExtractor:
             # We iterate a copy because items might be unlinked during the loop.
             for item in list(downloaded_files_in_lab):
                 if not item.is_file(): continue
-                if item.name == "lab_info.txt": continue # Skip internal files
-
+                if item.name == "lab_info.txt": continue  # Skip internal files
                 if item.suffix.lower() == ".ipynb":
                     ipynb_files.append(item)
                 else:
                     # Move to shared assets
-
                     # Combine original name with hash for descriptive uniqueness
                     try:
                         item_hash = hashlib.md5(item.read_bytes()).hexdigest()[:8]
@@ -666,7 +601,7 @@ class LabExtractor:
                         # Only copy if it doesn't already exist in shared assets
                         if not target_shared_path.exists():
                             shutil.copy2(item, target_shared_path)
-                            downloaded_count += 1 # Count actual new downloads to shared assets
+                            downloaded_count += 1  # Count actual new downloads to shared assets
 
                         # Store replacement mapping for ipynb files
                         # The key should be the path relative to the ipynb file's original location
@@ -725,7 +660,7 @@ class LabExtractor:
             print(f"  ⚠ Error processing lab: {e}")
             import traceback
             traceback.print_exc()
-        except Exception as e: # Catch any remaining unforeseen exceptions
+        except Exception as e:  # Catch any remaining unforeseen exceptions
             print(f"  ❌ An unexpected critical error occurred during lab processing: {e}")
             import traceback
             traceback.print_exc()
