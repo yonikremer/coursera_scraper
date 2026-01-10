@@ -29,11 +29,20 @@ def main_menu():
         print("4. 🎥 Apply Subtitles for VLC (Rename .vtt)")
         print("5. 🔄 Update Offline Dashboard")
         print("6. 🎵 Generate Video Playlists (.wpl)")
-        print("7. 🛠️  Fix Links (Legacy)")
+        print("7. 🧭 Update Course Navigation (Sidebar)")
+        print("8. 🛠️  Fix Links (Legacy)")
         print("0. ❌ Exit")
         print("="*40)
         
-        choice = input("Select an option (0-7): ").strip()
+        choice = input("Select an option (0-8): ").strip()
+        
+        if choice == '1':
+            # ...
+            pass
+        elif choice == '2':
+            # ...
+            pass
+        # (Replacing the logic block for cleaner insertion)
         
         if choice == '1':
             print("\n-- Download Courses --")
@@ -71,8 +80,12 @@ def main_menu():
         elif choice == '6':
             print("\n-- Generating Playlists --")
             run_script("create_playlists.py")
-            
+
         elif choice == '7':
+            print("\n-- Updating Course Navigation --")
+            run_script("create_course_navigator.py")
+            
+        elif choice == '8':
             print("\n-- Fix Links --")
             run_script("fix_links.py")
             

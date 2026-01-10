@@ -4,9 +4,11 @@ Coursera Material Downloader
 Downloads all course materials from enrolled Coursera courses/professional certificates.
 """
 import argparse
+from pathlib import Path
 from coursera.scraper import CourseraScraper
 from generate_dashboard import generate_dashboard
 from create_playlists import process_all_courses
+from create_course_navigator import scan_and_generate
 
 def main():
     parser = argparse.ArgumentParser(
@@ -57,6 +59,10 @@ def main():
     print("\n" + "=" * 60)
     print("Generating Course Playlists...")
     process_all_courses(args.output_dir)
+
+    # Generate Navigation
+    print("Updating Course Navigation...")
+    scan_and_generate(Path(args.output_dir))
 
     # Generate the offline dashboard
     print("Generating Offline Dashboard...")

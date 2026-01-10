@@ -2,12 +2,16 @@ import os
 import re
 import time
 import requests
-import json
 import subprocess
 import signal
 import sys
 from bs4 import BeautifulSoup
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Optional
+from collections import defaultdict
+import concurrent.futures
+import threading
+
+from tqdm import tqdm
 
 # Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -16,7 +20,7 @@ ROOT_DIR = "coursera_downloads"
 
 # Global variable to track the Ollama process
 ollama_process = None
-
+print_lock = threading.Lock()
 
 def start_ollama_server():
     """
@@ -96,13 +100,23 @@ def check_ollama_model():
 
 def get_html_files(root_dir: str) -> List[str]:
     """
-    Recursively finds all .html files in the directory.
+    Recursively finds all .html files in the directory, filtering out obvious quizzes/assignments by name.
     """
     html_files = []
+    # Keywords to skip based on filename
+    skip_keywords = ["quiz", "assignment", "submit", "peer_review", "exam"]
+    
     for root, dirs, files in os.walk(root_dir):
         for file in files:
             if file.endswith(".html"):
-                html_files.append(os.path.join(root, file))
+                lower_name = file.lower()
+                if not any(keyword in lower_name for keyword in skip_keywords):
+                    html_files.append(os.path.join(root, file))
+                # else:
+                #     # Optional: Debug print for skipped files
+                #     # print(f"Skipping (by name): {file}")
+                #     pass
+
     return sorted(html_files)
 
 
@@ -118,13 +132,27 @@ def has_summary(file_path: str) -> bool:
         return False
 
 
-def extract_text_from_html(file_path: str) -> str:
+def extract_text_from_html(file_path: str) -> Optional[str]:
     """
     Extracts user-readable text from the Coursera HTML file.
+    Returns None if the file looks like a quiz/assignment (has inputs).
     """
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             soup = BeautifulSoup(f, 'html.parser')
+
+        # Check for quiz indicators (interactive elements)
+        # Quizzes usually have radio buttons, checkboxes, or text areas for answers.
+        # We look for <input type="radio">, <input type="checkbox">, <textarea>, or specific quiz classes.
+        
+        has_radio = bool(soup.find('input', {'type': 'radio'}))
+        has_checkbox = bool(soup.find('input', {'type': 'checkbox'}))
+        has_textarea = bool(soup.find('textarea'))
+        has_quiz_class = bool(soup.find(class_=re.compile(r'rc-FormPartsQuestion|rc-Option')))
+
+        if has_radio or has_checkbox or has_textarea or has_quiz_class:
+            print(f"Skipping (detected quiz/interactive content): {os.path.basename(file_path)}")
+            return None
 
         content_div = soup.find('div', class_='content-wrapper')
         if not content_div:
@@ -137,7 +165,8 @@ def extract_text_from_html(file_path: str) -> str:
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text
     except (OSError, UnicodeDecodeError) as e:
-        print(f"Error reading {file_path}: {e}")
+        with print_lock:
+            print(f"Error reading {file_path}: {e}")
         return ""
 
 
@@ -172,16 +201,19 @@ def inject_summary_into_file(file_path: str, summary_html: str):
         elif soup.body:
             soup.body.insert(0, summary_div)
         else:
-            print(f"Could not find a place to insert summary in {file_path}")
+            with print_lock:
+                print(f"Could not find a place to insert summary in {file_path}")
             return
 
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(str(soup))
-
-        print(f"Successfully injected summary into {os.path.basename(file_path)}")
+            
+        # with print_lock:
+        #     print(f"Successfully injected summary into {os.path.basename(file_path)}")
 
     except OSError as e:
-        print(f"File system error while writing to {file_path}: {e}")
+        with print_lock:
+            print(f"File system error while writing to {file_path}: {e}")
 
 
 def generate_content_updates(current_context: str, new_text: str, file_name: str) -> Tuple[str, str]:
@@ -190,10 +222,12 @@ def generate_content_updates(current_context: str, new_text: str, file_name: str
     """
 
     if len(new_text) < 100:
-        print(f"Skipping {file_name} (content too short).")
+        # with print_lock:
+        #     print(f"Skipping {file_name} (content too short).")
         return "", current_context
 
-    print(f"Processing: {file_name} with {MODEL_NAME}...")
+    # with print_lock:
+    #     print(f"Processing: {file_name} with {MODEL_NAME}...")
 
     prompt = f"""
     You are an expert tutor creating study aids for a Hebrew speaking student.
@@ -253,18 +287,57 @@ def generate_content_updates(current_context: str, new_text: str, file_name: str
             local_summary = raw_summary.replace("```html", "").replace("```", "").strip()
             return local_summary, updated_context
         else:
-            print("Warning: AI output format incorrect. Skipping this file's summary.")
+            with print_lock:
+                print(f"Warning: AI output format incorrect for {file_name}. Skipping.")
             return "", current_context
 
     except requests.exceptions.RequestException as e:
-        print(f"Ollama API error processing {file_name}: {e}")
+        with print_lock:
+            print(f"Ollama API error processing {file_name}: {e}")
         return "", current_context
+
+
+def process_course(course_name: str, files: List[str], pbar: tqdm):
+    """
+    Process all files for a specific course sequentially to maintain context.
+    """
+    course_context = ""
+    
+    for file_path in files:
+        file_name = os.path.basename(file_path)
+        
+        text = extract_text_from_html(file_path)
+        
+        # If extract_text_from_html returns None, it was a quiz/interactive file.
+        if text is None:
+            pbar.update(1)
+            continue
+            
+        if not text:
+            # Just empty content, skip but count it
+            pbar.update(1)
+            continue
+            
+        local_summary_html, course_context = generate_content_updates(course_context, text, file_name)
+        
+        if local_summary_html:
+            inject_summary_into_file(file_path, local_summary_html)
+            
+        pbar.update(1)
+        # Optional: Print progress for this course
+        # with print_lock:
+        #    print(f"[{course_name}] Processed {file_name}")
 
 
 def signal_handler(sig, frame):
     print("\nExiting gracefully...")
     stop_ollama_server()
     sys.exit(0)
+
+
+def is_video(filename: str):
+    # if there is a mp4 file with the same name as the HTML file, this is a video
+    return os.path.exists(filename.replace(".html", ".mp4"))
 
 
 def main():
@@ -286,26 +359,34 @@ def main():
         stop_ollama_server()
         return
 
-    files_to_process = [f for f in files if not has_summary(f)]
+    files_to_process = [f for f in files if not has_summary(f) and not is_video(f)]
     print(f"Found {len(files)} files. {len(files_to_process)} need processing.")
 
-    global_context = ""
+    # Group files by course
+    course_files = defaultdict(list)
+    for f in files_to_process:
+        # Determine course name from directory structure
+        # Assumes structure: coursera_downloads/course_name/...
+        rel_path = os.path.relpath(f, ROOT_DIR)
+        parts = rel_path.split(os.sep)
+        if parts:
+            course_name = parts[0]
+            course_files[course_name].append(f)
+            
+    print(f"Identified {len(course_files)} courses to process.")
+    print("Starting parallel processing... (Note: The first file per course may take longer)")
 
     try:
-        for i, file_path in enumerate(files_to_process):
-            file_name = os.path.basename(file_path)
-
-            if i == 0:
-                print("   (Note: The first file takes longer as the model loads into GPU VRAM.)")
-
-            text = extract_text_from_html(file_path)
-            if not text:
-                continue
-
-            local_summary_html, global_context = generate_content_updates(global_context, text, file_name)
-
-            if local_summary_html:
-                inject_summary_into_file(file_path, local_summary_html)
+        with tqdm(total=len(files_to_process)) as pbar:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(course_files)) as executor:
+                futures = []
+                for course_name, files in course_files.items():
+                    futures.append(
+                        executor.submit(process_course, course_name, files, pbar)
+                    )
+                
+                # Wait for all to complete
+                concurrent.futures.wait(futures)
                 
     except Exception as e:
         print(f"An error occurred: {e}")

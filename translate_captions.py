@@ -1,14 +1,16 @@
 import os
 import time
-from typing import List
-from deep_translator import GoogleTranslator
+import json
+import argparse
+import requests
+import concurrent.futures
+from typing import List, Optional
 
 # Configuration
 ROOT_DIR = "coursera_downloads"
-SOURCE_LANG = 'en'
-TARGET_LANG = 'iw'
-BATCH_SIZE = 30  # Number of lines to translate in one request
-DELAY_BETWEEN_CHUNKS = 0.5  # Seconds to sleep between API calls to avoid blocking
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "gemma3-translator:4b"
+BATCH_SIZE = 15  # Gemma 3 is more capable, we can try slightly larger batches
 RETRY_ATTEMPTS = 3
 
 def get_vtt_files(root_dir: str) -> List[str]:
@@ -44,19 +46,55 @@ def is_metadata(line: str) -> bool:
         return True
     return False
 
-def translate_batch_with_retry(translator: GoogleTranslator, batch: List[str]) -> List[str]:
+def translate_batch_ollama(batch: List[str]) -> Optional[List[str]]:
     """
-    Translates a batch of text with retry logic.
+    Translates a batch of text using Ollama (Gemma 3).
+    Expects a JSON array input and returns a JSON array output.
     """
+    # Prompt is simplified because system message handles instructions
+    prompt = json.dumps(batch)
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False
+    }
+
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            return translator.translate_batch(batch)
+            response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+            response.raise_for_status()
+            result = response.json()
+            response_text = result.get("response", "").strip()
+
+            # cleanup markdown if present (e.g. ```json ... ```)
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+            
+            translated_batch = json.loads(response_text)
+
+            if not isinstance(translated_batch, list):
+                print(f"    [Warning] Ollama returned non-list JSON: {type(translated_batch)}")
+                continue
+
+            if len(translated_batch) != len(batch):
+                print(f"    [Warning] Mismatch in translation count (Attempt {attempt + 1}). "
+                      f"Sent: {len(batch)}, Got: {len(translated_batch)}")
+                continue
+
+            return translated_batch
+
+        except json.JSONDecodeError as e:
+            print(f"    [Warning] Failed to parse JSON from Ollama (Attempt {attempt + 1}): {e}")
+            # print(f"    Response was: {response_text[:100]}...")
         except Exception as e:
-            print(f"    [Warning] Batch translation failed (Attempt {attempt + 1}/{RETRY_ATTEMPTS}): {e}")
-            time.sleep(2 * (attempt + 1))  # Exponential backoff
-    
-    print("    [Error] Failed to translate batch after retries. Returning original text.")
-    return batch
+            print(f"    [Error] Ollama request failed (Attempt {attempt + 1}): {e}")
+            time.sleep(2)
+
+    print("    [Error] Failed to translate batch after retries.")
+    return None
 
 def process_vtt_file(file_path: str):
     """
@@ -103,33 +141,31 @@ def process_vtt_file(file_path: str):
         return
 
     # 2. Translate in batches
-    translator = GoogleTranslator(source=SOURCE_LANG, target=TARGET_LANG)
     translated_texts = []
+    total_batches = (len(text_to_translate) + BATCH_SIZE - 1) // BATCH_SIZE
 
     for i in range(0, len(text_to_translate), BATCH_SIZE):
         batch = text_to_translate[i : i + BATCH_SIZE]
-        # print(f"    Translating batch {i//BATCH_SIZE + 1}/{total_batches}...")
         
-        translated_batch = translate_batch_with_retry(translator, batch)
+        translated_batch = translate_batch_ollama(batch)
+        if translated_batch is None:
+            print(f"    [Error] Aborting {os.path.basename(file_path)} due to translation failure.")
+            return
+
         translated_texts.extend(translated_batch)
-        
-        if i + BATCH_SIZE < len(text_to_translate):
-            time.sleep(DELAY_BETWEEN_CHUNKS)
+        # No sleep needed for local LLM usually, but small breath doesn't hurt
+        # time.sleep(0.1)
 
     # 3. Reconstruct content
-    # Make a copy of lines
     new_lines = list(lines)
     
-    # Verify alignment
+    # Verify alignment (double check)
     if len(text_lines_indices) != len(translated_texts):
-        print(f"    [Error] Mismatch in translation count. Orig: {len(text_lines_indices)}, Trans: {len(translated_texts)}")
-        # Fallback: Just save original to avoid corruption, or save partial
+        print(f"    [Error] Final mismatch. Orig: {len(text_lines_indices)}, Trans: {len(translated_texts)}")
         return
 
     for idx_in_original, translated_text in zip(text_lines_indices, translated_texts):
-        # Preserve original indentation/newlines if possible, though VTT is usually plain
-        # VTT text usually doesn't have leading indentation
-        new_lines[idx_in_original] = translated_text + "\n"
+        new_lines[idx_in_original] = str(translated_text) + "\n"
 
     # 4. Write to new file
     try:
@@ -139,14 +175,13 @@ def process_vtt_file(file_path: str):
     except Exception as e:
         print(f"    [Error] Could not write file: {e}")
 
-import argparse
-
-import concurrent.futures
-
 def main():
-    parser = argparse.ArgumentParser(description="Translate VTT files from English to Hebrew.")
+    parser = argparse.ArgumentParser(description="Translate VTT files from English to Hebrew using Ollama.")
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of files to process.")
-    parser.add_argument("--workers", type=int, default=10, help="Number of parallel threads.")
+    # Since we are using local GPU, we can probably do 2-3 parallel requests if VRAM allows, 
+    # but sequential is safer for 4050 (6GB VRAM) running Llama 3 (4GB+).
+    # Let's default to 1 worker to avoid OOM.
+    parser.add_argument("--workers", type=int, default=1, help="Number of parallel threads.")
     args = parser.parse_args()
 
     files = get_vtt_files(ROOT_DIR)
@@ -160,13 +195,18 @@ def main():
         print(f"Limiting to first {args.limit} files.")
         files = files[:args.limit]
 
-    print(f"Starting translation with {args.workers} threads...")
+    print(f"Starting translation with {args.workers} threads using {OLLAMA_MODEL}...")
+
+    # Verify Ollama is running
+    try:
+        requests.get(OLLAMA_URL.replace("/api/generate", "/"))
+    except Exception:
+        print(f"Error: Could not connect to Ollama at {OLLAMA_URL}. Is it running?")
+        return
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        # Submit all tasks
         futures = [executor.submit(process_vtt_file, file_path) for file_path in files]
         
-        # Wait for completion (optional progress tracking could be added here)
         for future in concurrent.futures.as_completed(futures):
             try:
                 future.result()

@@ -65,6 +65,15 @@ ollama pull llama3.1
 python summarize_readings.py
 ```
 
+### 7. 📚 Offline Course Navigator
+The main downloader (`main.py`) automatically generates a full course navigator at the end of the download process.
+- **Integrated Sidebar**: Jump between lessons easily without leaving the page.
+- **Smart Video Player**: Automatically advances to the next lesson when a video finishes.
+- **Player Preferences**: Remembers your **playback speed** (e.g., 2x) and volume settings across all videos and courses.
+- **Hebrew Support**: AI summaries are correctly displayed Right-to-Left (RTL).
+
+**How to use:** Simply open **any HTML file** in a course folder to start learning. No extra steps required!
+
 ## ⚙️ Configuration
 
 ### Customizing Downloads

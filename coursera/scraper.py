@@ -406,6 +406,18 @@ class CourseraScraper:
         # Cleanup stale modules (from previous runs or if they don't exist anymore)
         cleanup_stale_modules(course_dir, valid_modules)
 
+        # Generate Navigation
+        try:
+            print("\n  Generating offline navigation...")
+            # Import dynamically to avoid path issues
+            import sys
+            if str(Path.cwd()) not in sys.path:
+                sys.path.append(str(Path.cwd()))
+            from create_course_navigator import generate_course_navigation
+            generate_course_navigation(course_dir)
+        except Exception as e:
+            print(f"  ⚠ Failed to generate navigation: {e}")
+
         print(f"\n{'=' * 60}")
         print(f"✓ Course complete!")
         print(f"  Items processed: {len(visited_urls)}")
