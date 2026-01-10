@@ -1,219 +1,152 @@
 import os
-import time
-import json
+import asyncio
 import argparse
-import requests
-import concurrent.futures
+import httpx
+import re
 from typing import List, Optional
+from tqdm.asyncio import tqdm
 
 # Configuration
 ROOT_DIR = "coursera_downloads"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3-translator:4b"
-BATCH_SIZE = 15  # Gemma 3 is more capable, we can try slightly larger batches
 RETRY_ATTEMPTS = 3
+DEFAULT_CONCURRENCY = 64  # Total parallel requests across all files
 
 def get_vtt_files(root_dir: str) -> List[str]:
-    """
-    Recursively finds all *_en.vtt files in the directory.
-    """
     vtt_files = []
-    for root, dirs, files in os.walk(root_dir):
+    for root, _, files in os.walk(root_dir):
         for file in files:
             if file.endswith("_en.vtt"):
                 vtt_files.append(os.path.join(root, file))
     return sorted(vtt_files)
 
 def is_timestamp(line: str) -> bool:
-    """
-    Checks if a line looks like a VTT timestamp: '00:00:00.000 --> 00:00:05.000'
-    """
     return '-->' in line and any(c.isdigit() for c in line)
 
 def is_metadata(line: str) -> bool:
-    """
-    Checks for VTT header or metadata/IDs.
-    """
     line = line.strip()
-    if not line:
-        return False
-    if line == "WEBVTT":
-        return True
+    if not line: return False
+    if line == "WEBVTT": return True
     if line.startswith("NOTE"):
         return True
-    # If it's a number only (sometimes used as IDs in subtitles), treat as metadata
     if line.isdigit():
         return True
     return False
 
-def translate_batch_ollama(batch: List[str]) -> Optional[List[str]]:
+def clean_translation(text: str) -> str:
     """
-    Translates a batch of text using Ollama (Gemma 3).
-    Expects a JSON array input and returns a JSON array output.
+    Strips markdown, JSON brackets, and extra quotes.
     """
-    # Prompt is simplified because system message handles instructions
-    prompt = json.dumps(batch)
+    text = text.strip()
+    # Remove markdown code blocks
+    text = re.sub(r'```(?:json|html|text)?\s*(.*?)\s*```', r'\1', text, flags=re.DOTALL)
+    # Remove simple [ "text" ] if model wraps it
+    text = re.sub(r'^\[\s*"(.*?)"\s*\]$', r'\1', text)
+    # Remove wrapping quotes
+    if (text.startswith('"') and text.endswith('"')) or \
+       (text.startswith("'" ) and text.endswith("'" )):
+        text = text[1:-1].strip()
+    return text.strip()
 
+async def translate_line_async(client: httpx.AsyncClient, text: str, semaphore: asyncio.Semaphore) -> Optional[str]:
+    prompt = f"Translate to Hebrew. Return ONLY the translation.\nText: {text}"
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
-        "stream": False
+        "stream": False,
+        "options": {"temperature": 0.1, "num_predict": 128}
     }
 
-    for attempt in range(RETRY_ATTEMPTS):
-        try:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=120)
-            response.raise_for_status()
-            result = response.json()
-            response_text = result.get("response", "").strip()
-
-            # cleanup markdown if present (e.g. ```json ... ```)
-            if response_text.startswith("```"):
-                response_text = response_text.split("```")[1]
-                if response_text.startswith("json"):
-                    response_text = response_text[4:]
-            
-            translated_batch = json.loads(response_text)
-
-            if not isinstance(translated_batch, list):
-                print(f"    [Warning] Ollama returned non-list JSON: {type(translated_batch)}")
-                continue
-
-            if len(translated_batch) != len(batch):
-                print(f"    [Warning] Mismatch in translation count (Attempt {attempt + 1}). "
-                      f"Sent: {len(batch)}, Got: {len(translated_batch)}")
-                continue
-
-            return translated_batch
-
-        except json.JSONDecodeError as e:
-            print(f"    [Warning] Failed to parse JSON from Ollama (Attempt {attempt + 1}): {e}")
-            # print(f"    Response was: {response_text[:100]}...")
-        except Exception as e:
-            print(f"    [Error] Ollama request failed (Attempt {attempt + 1}): {e}")
-            time.sleep(2)
-
-    print("    [Error] Failed to translate batch after retries.")
+    async with semaphore:
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                response = await client.post(OLLAMA_URL, json=payload, timeout=60.0)
+                response.raise_for_status()
+                result = response.json()
+                translated = result.get("response", "")
+                
+                cleaned = clean_translation(translated)
+                if cleaned:
+                    return cleaned
+            except Exception:
+                await asyncio.sleep(0.5)
     return None
 
-def process_vtt_file(file_path: str):
-    """
-    Parses, translates, and saves a VTT file.
-    """
+async def process_vtt_file(file_path: str, client: httpx.AsyncClient, semaphore: asyncio.Semaphore, pbar: tqdm):
     output_path = file_path.replace("_en.vtt", "_heb.vtt")
-    
     if os.path.exists(output_path):
-        # Optional: Skip if already exists
-        # print(f"Skipping {os.path.basename(file_path)} (Target exists)")
-        return
-
-    print(f"Processing: {os.path.basename(file_path)}")
+        pbar.update(1)
+        return True
 
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
-    except Exception as e:
-        print(f"    [Error] Could not read file: {e}")
-        return
+    except Exception:
+        pbar.update(1)
+        return False
 
-    # 1. Identify text lines to translate
-    # We will store indices to put translated text back later
-    text_lines_indices = []
-    text_to_translate = []
+    text_indices = []
+    texts = []
 
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped:
+        if not stripped or is_metadata(stripped) or is_timestamp(stripped):
             continue
-        if is_metadata(stripped):
-            continue
-        if is_timestamp(stripped):
-            continue
-        
-        # It's likely text
-        # Only translate if it has letters
         if any(c.isalpha() for c in stripped):
-            text_lines_indices.append(i)
-            text_to_translate.append(stripped)
+            text_indices.append(i)
+            texts.append(stripped)
 
-    if not text_to_translate:
-        print("    No text content found to translate.")
-        return
+    if not texts:
+        translated_texts = []
+    else:
+        tasks = [translate_line_async(client, text, semaphore) for text in texts]
+        translated_texts = await asyncio.gather(*tasks)
 
-    # 2. Translate in batches
-    translated_texts = []
-    total_batches = (len(text_to_translate) + BATCH_SIZE - 1) // BATCH_SIZE
+        if any(t is None for t in translated_texts):
+            pbar.update(1)
+            return False
 
-    for i in range(0, len(text_to_translate), BATCH_SIZE):
-        batch = text_to_translate[i : i + BATCH_SIZE]
-        
-        translated_batch = translate_batch_ollama(batch)
-        if translated_batch is None:
-            print(f"    [Error] Aborting {os.path.basename(file_path)} due to translation failure.")
-            return
-
-        translated_texts.extend(translated_batch)
-        # No sleep needed for local LLM usually, but small breath doesn't hurt
-        # time.sleep(0.1)
-
-    # 3. Reconstruct content
     new_lines = list(lines)
-    
-    # Verify alignment (double check)
-    if len(text_lines_indices) != len(translated_texts):
-        print(f"    [Error] Final mismatch. Orig: {len(text_lines_indices)}, Trans: {len(translated_texts)}")
-        return
+    for idx, translated in zip(text_indices, translated_texts):
+        new_lines[idx] = translated + "\n"
 
-    for idx_in_original, translated_text in zip(text_lines_indices, translated_texts):
-        new_lines[idx_in_original] = str(translated_text) + "\n"
-
-    # 4. Write to new file
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)
-        print(f"    Saved: {os.path.basename(output_path)}")
-    except Exception as e:
-        print(f"    [Error] Could not write file: {e}")
+        pbar.update(1)
+        return True
+    except Exception:
+        pbar.update(1)
+        return False
 
-def main():
-    parser = argparse.ArgumentParser(description="Translate VTT files from English to Hebrew using Ollama.")
-    parser.add_argument("--limit", type=int, default=None, help="Limit the number of files to process.")
-    # Since we are using local GPU, we can probably do 2-3 parallel requests if VRAM allows, 
-    # but sequential is safer for 4050 (6GB VRAM) running Llama 3 (4GB+).
-    # Let's default to 1 worker to avoid OOM.
-    parser.add_argument("--workers", type=int, default=1, help="Number of parallel threads.")
+async def main():
+    parser = argparse.ArgumentParser(description="Translate VTT files with parallel processing.")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     args = parser.parse_args()
 
-    files = get_vtt_files(ROOT_DIR)
+    all_vtt = get_vtt_files(ROOT_DIR)
+    files_to_process = [f for f in all_vtt if not os.path.exists(f.replace("_en.vtt", "_heb.vtt"))]
     
-    if not files:
-        print(f"No '_en.vtt' files found in {ROOT_DIR}")
-        return
-
-    print(f"Found {len(files)} files to process.")
     if args.limit:
-        print(f"Limiting to first {args.limit} files.")
-        files = files[:args.limit]
+        files_to_process = files_to_process[:args.limit]
 
-    print(f"Starting translation with {args.workers} threads using {OLLAMA_MODEL}...")
-
-    # Verify Ollama is running
-    try:
-        requests.get(OLLAMA_URL.replace("/api/generate", "/"))
-    except Exception:
-        print(f"Error: Could not connect to Ollama at {OLLAMA_URL}. Is it running?")
+    if not files_to_process:
+        print("Everything is up to date.")
         return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_vtt_file, file_path) for file_path in files]
-        
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Thread generated an exception: {e}")
+    semaphore = asyncio.Semaphore(args.concurrency)
+    limits = httpx.Limits(max_keepalive_connections=args.concurrency, max_connections=args.concurrency)
+    
+    async with httpx.AsyncClient(limits=limits) as client:
+        with tqdm(total=len(files_to_process), desc="Translating Videos", unit="video") as pbar:
+            # We process files one by one to keep semaphore focused on line level 
+            # while still providing a nice file-level progress bar.
+            for file_path in files_to_process:
+                await process_vtt_file(file_path, client, semaphore, pbar)
 
-    print("\nAll tasks completed.")
+    print("\nProcessing complete.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
