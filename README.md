@@ -20,17 +20,23 @@ A comprehensive tool to download your Coursera courses (videos, readings, labs) 
    ollama pull llama3.1
    ```
 
-### 3. Downloading Courses
-Run the main script to start downloading your certificate/course materials:
+### 3. Downloading Courses (`main.py`)
+This is the core script that logs you in and downloads all course materials.
 
 ```bash
 python main.py
 ```
 
-**What to expect:**
-- A Chrome window will open. **Log in to Coursera** manually with your Google account.
-- Once logged in, the script will automatically take over and start downloading everything to the `coursera_downloads` folder.
-- **Do not close** the Chrome window while it's working.
+**What it downloads:**
+- 🎬 **Videos**: High-quality (720p) MP4 files.
+- 📄 **Readings & Resources**: PDFs, external links, and reading materials (saved as HTML).
+- 🧪 **Jupyter Labs**: Downloads the `.ipynb` files **plus all data files** (CSV, JSON, etc.) needed to run the lab.
+- 📝 **Assignments & Quizzes**: Saves the content of quizzes and assignments as HTML for offline review.
+- 🏗️ **Organized Folders**: Everything is automatically sorted into Module/Week folders.
+
+**Important:** A Chrome window will open. **Log in to Coursera** manually with your Google account. Once logged in, the script will automatically take over. **Do not close** the Chrome window.
+
+---
 
 ### 4. Generating AI Summaries (Optional)
 After your downloads are complete, you can generate Hebrew summaries for all reading materials:
