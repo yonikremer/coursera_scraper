@@ -351,9 +351,13 @@ class LabExtractor:
                 self.driver.execute_script("""
                     const messySelectors = [
                         '[data-ai-instructions="true"]',
+                        '[data-testid="content-integrity-instructions"]',
+                        '[data-testid="visually-hidden"]',
                         '[data-testid="like-button"]',
                         '[data-testid="dislike-button"]',
-                        '[aria-label="Text Formatting"]'
+                        '[data-testid="part-points"]',
+                        '[aria-label="Text Formatting"]',
+                        '.rc-A11yScreenReaderOnly'
                     ];
                     messySelectors.forEach(selector => {
                         document.querySelectorAll(selector).forEach(el => el.remove());
