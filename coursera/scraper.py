@@ -531,13 +531,13 @@ class CourseraScraper:
             if not courses:
                 # Default courses list (can be made dynamic later)
                 courses = [
-                    # "https://www.coursera.org/learn/foundations-of-data-science",
+                    "https://www.coursera.org/learn/foundations-of-data-science",
                     "https://www.coursera.org/learn/get-started-with-python",
-                    # "https://www.coursera.org/learn/go-beyond-the-numbers-translate-data-into-insight",
-                    # "https://www.coursera.org/learn/the-power-of-statistics",
-                    # "https://www.coursera.org/learn/regression-analysis-simplify-complex-data-relationships",
-                    # "https://www.coursera.org/learn/the-nuts-and-bolts-of-machine-learning",
-                    # "https://www.coursera.org/learn/google-advanced-data-analytics-capstone",
+                    "https://www.coursera.org/learn/go-beyond-the-numbers-translate-data-into-insight",
+                    "https://www.coursera.org/learn/the-power-of-statistics",
+                    "https://www.coursera.org/learn/regression-analysis-simplify-complex-data-relationships",
+                    "https://www.coursera.org/learn/the-nuts-and-bolts-of-machine-learning",
+                    "https://www.coursera.org/learn/google-advanced-data-analytics-capstone",
                 ]
 
             total_materials = 0
