@@ -22,6 +22,12 @@ class LabExtractor:
         self.shared_assets_dir = shared_assets_dir
         self.labs_shared_assets_dir = self.shared_assets_dir / "labs"
         self.labs_shared_assets_dir.mkdir(exist_ok=True, parents=True)
+        # Candidate directories to search for downloaded files
+        self.search_dirs = [
+            self.download_dir,
+            Path.home() / "Downloads",
+            Path.cwd()
+        ]
 
     def _update_ipynb_references(self, ipynb_path: Path, replacements: dict):
         """Update file references in .ipynb files to point to shared assets."""
@@ -150,22 +156,18 @@ class LabExtractor:
                     # Wait a bit for download to start/finish
                     time.sleep(2)
 
-                    # Check if file appeared in downloads
+                    # Check if file appeared in any candidate download directory
                     for attempt in range(10):
-                        # Check in configured download dir (coursera_downloads)
-                        potential_file = self.download_dir / filename
-                        if potential_file.exists():
-                            shutil.move(str(potential_file), str(target_path))
-                            downloaded_files_paths.append(target_path)
-                            print(f"    ✓ Downloaded: {filename}")
-                            break
-
-                        # Also check in user's Downloads folder
-                        user_downloads = Path.home() / "Downloads" / filename
-                        if user_downloads.exists():
-                            shutil.move(str(user_downloads), str(target_path))
-                            downloaded_files_paths.append(target_path)
-                            print(f"    ✓ Downloaded (from home Downloads): {filename}")
+                        found = False
+                        for dir_path in self.search_dirs:
+                            potential_file = dir_path / filename
+                            if potential_file.exists():
+                                shutil.move(str(potential_file), str(target_path))
+                                downloaded_files_paths.append(target_path)
+                                print(f"    ✓ Downloaded (from {dir_path.name}): {filename}")
+                                found = True
+                                break
+                        if found:
                             break
                         time.sleep(1)
 
@@ -254,25 +256,18 @@ class LabExtractor:
                         self.driver.execute_script("arguments[0].click();", target_btn)
 
                         # 3. Wait for download
-                        # Check downloads folder
+                        # Check in any candidate download directory
                         file_downloaded = False
                         for attempt in range(15):  # Wait up to 15s
-                            # Check in configured download dir (coursera_downloads)
-                            potential_file = self.download_dir / filename_raw
-                            if potential_file.exists():
-                                shutil.move(str(potential_file), str(target_path))
-                                downloaded_files_paths.append(target_path)
-                                print(f"    ✓ Downloaded: {filename_raw}")
-                                file_downloaded = True
-                                break
-
-                            # Also check in user's Downloads folder
-                            user_downloads = Path.home() / "Downloads" / filename_raw
-                            if user_downloads.exists():
-                                shutil.move(str(user_downloads), str(target_path))
-                                downloaded_files_paths.append(target_path)
-                                print(f"    ✓ Downloaded (from home Downloads): {filename_raw}")
-                                file_downloaded = True
+                            for dir_path in self.search_dirs:
+                                potential_file = dir_path / filename_raw
+                                if potential_file.exists():
+                                    shutil.move(str(potential_file), str(target_path))
+                                    downloaded_files_paths.append(target_path)
+                                    print(f"    ✓ Downloaded (from {dir_path.name}): {filename_raw}")
+                                    file_downloaded = True
+                                    break
+                            if file_downloaded:
                                 break
                             time.sleep(1)
 
@@ -350,6 +345,22 @@ class LabExtractor:
             # Remember the original window handle.
             original_window = self.driver.current_window_handle
             print(f"  Original window: {original_window}")
+
+            # Try to remove messy elements before launching.
+            try:
+                self.driver.execute_script("""
+                    const messySelectors = [
+                        '[data-ai-instructions="true"]',
+                        '[data-testid="like-button"]',
+                        '[data-testid="dislike-button"]',
+                        '[aria-label="Text Formatting"]'
+                    ];
+                    messySelectors.forEach(selector => {
+                        document.querySelectorAll(selector).forEach(el => el.remove());
+                    });
+                """)
+            except:
+                pass
 
             # Launch lab.
             launch_clicked = False
@@ -482,12 +493,9 @@ class LabExtractor:
 
                     while time.time() - start_time < 30:
                         potential_zips = []
-                        # Check in configured download dir
-                        for p in self.download_dir.glob("Files*.zip"):
-                            potential_zips.append(p)
-                        # Check in user's Downloads folder
-                        for p in (Path.home() / "Downloads").glob("Files*.zip"):
-                            potential_zips.append(p)
+                        for dir_path in self.search_dirs:
+                            for p in dir_path.glob("Files*.zip"):
+                                potential_zips.append(p)
 
                         if potential_zips:
                             # Sort by modification time (most recent first)
@@ -551,7 +559,7 @@ class LabExtractor:
                                         print(f"  ⚠ Could not delete {downloaded_zip_file.name}: {e}")
 
                                 # Proactive cleanup: remove any other Files*.zip
-                                for dir_path in [self.download_dir, Path.home() / "Downloads"]:
+                                for dir_path in self.search_dirs:
                                     try:
                                         for junk_zip in dir_path.glob("Files*.zip"):
                                             if junk_zip.exists():
