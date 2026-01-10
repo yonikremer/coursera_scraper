@@ -43,7 +43,6 @@ def fix_attachment_links(root_dir):
                     continue
                 
                 # Logic to find matching local file
-                # 1. Try to match by data-name if present (check on <a> and children)
                 matched_file = None
                 
                 # Check data-name on <a> tag
@@ -90,6 +89,48 @@ def fix_attachment_links(root_dir):
                     if 'rel' in a_tag.attrs: del a_tag.attrs['rel']
                     
                     print(f"  [FIX] {html_file.name}: Link to '{href[:30]}...' -> '{new_href}'")
+                    modified = True
+                    links_fixed += 1
+
+            # Find div assets (CML assets)
+            for asset_div in soup.find_all('div', attrs={"data-url": True}):
+                href = asset_div['data-url']
+                if not href or not href.startswith(('http://', 'https://')):
+                    continue
+                
+                data_name = asset_div.get('data-name')
+                matched_file = None
+                
+                if data_name:
+                    clean_name = sanitize_filename(data_name)
+                    for lf in local_files:
+                        if f"_attachment_{clean_name}" in lf.name:
+                            matched_file = lf
+                            break
+                
+                if not matched_file:
+                    try:
+                        parsed_url = urllib.parse.urlparse(href)
+                        url_filename = os.path.basename(parsed_url.path)
+                        if url_filename:
+                            url_filename = urllib.parse.unquote(url_filename)
+                            clean_url_name = sanitize_filename(url_filename)
+                            for lf in local_files:
+                                if clean_url_name in lf.name or (Path(clean_url_name).stem in lf.stem and lf.suffix == Path(clean_url_name).suffix):
+                                    matched_file = lf
+                                    break
+                    except Exception: pass
+
+                if matched_file:
+                    new_href = matched_file.name
+                    # Wrap the asset div in a link if it's not already inside one
+                    if not asset_div.find_parent('a'):
+                        new_a = soup.new_tag('a', href=new_href, target="_self")
+                        new_a['style'] = "text-decoration: none; color: inherit; cursor: pointer; display: block;"
+                        asset_div.wrap(new_a)
+                    
+                    asset_div['data-url'] = new_href
+                    print(f"  [FIX] {html_file.name}: Div Asset '{data_name}' -> '{new_href}'")
                     modified = True
                     links_fixed += 1
 
