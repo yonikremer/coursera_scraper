@@ -348,7 +348,8 @@ def generate_course_navigation(course_dir: Path):
     course_struct = {'name': course_dir.name, 'modules': []}
     
     for module_dir in sorted([d for d in course_dir.iterdir() if d.is_dir()], key=lambda x: x.name):
-        module_struct = {'name': module_dir.name, 'items': []}
+        module_name = module_dir.name.replace('_', ' ').lower()
+        module_struct = {'name': module_name, 'items': []}
         
         # Find groups
         files = sorted([f for f in module_dir.iterdir() if f.is_file()])
