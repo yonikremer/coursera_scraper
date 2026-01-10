@@ -1,6 +1,9 @@
 from pathlib import Path
 from typing import Set, Tuple
 import requests
+import urllib.parse
+import os
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, WebDriverException
 from ..files import get_or_move_path, download_file
@@ -76,6 +79,56 @@ class ReadingExtractor:
                     pass
 
                 # 3. Save the HTML content.
+                # Update attachment links to point to local files
+                soup = BeautifulSoup(content, 'html.parser')
+                attachment_files = [f for f in module_dir.iterdir() if f.is_file() and "_attachment_" in f.name]
+                
+                for a_tag in soup.find_all('a', href=True):
+                    href = a_tag['href']
+                    if not href or not href.startswith(('http://', 'https://')):
+                        continue
+                        
+                    matched_file = None
+                    
+                    # Check data-name on <a> tag or children
+                    data_name = a_tag.get('data-name')
+                    if not data_name:
+                        child_with_data = a_tag.find(attrs={"data-name": True})
+                        if child_with_data:
+                            data_name = child_with_data.get('data-name')
+                            
+                    if data_name:
+                        clean_name = sanitize_filename(data_name)
+                        for lf in attachment_files:
+                            if f"_attachment_{clean_name}" in lf.name:
+                                matched_file = lf
+                                break
+                    
+                    # Fallback: Check filename in URL
+                    if not matched_file:
+                        try:
+                            parsed_url = urllib.parse.urlparse(href)
+                            url_filename = os.path.basename(parsed_url.path)
+                            if url_filename:
+                                url_filename = urllib.parse.unquote(url_filename)
+                                clean_url_name = sanitize_filename(url_filename)
+                                for lf in attachment_files:
+                                    if clean_url_name in lf.name:
+                                        matched_file = lf
+                                        break
+                                    if Path(clean_url_name).stem in lf.stem and lf.suffix == Path(clean_url_name).suffix:
+                                        matched_file = lf
+                                        break
+                        except Exception:
+                            pass
+                            
+                    if matched_file:
+                        a_tag['href'] = matched_file.name
+                        a_tag['target'] = "_self"
+                        if 'rel' in a_tag.attrs: del a_tag.attrs['rel']
+
+                content = str(soup)
+
                 filename = f"{item_counter:03d}_{title}.html"
                 html_file = get_or_move_path(course_dir, module_dir, filename)
                 try:
