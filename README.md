@@ -62,19 +62,16 @@ python main.py --email your.email@gmail.com --cert-url "https://www.coursera.org
 
 ## AI Reading Summarization
 
-The project includes an optional tool to generate AI-powered summaries of downloaded reading materials using Google's Gemini API.
+The project includes an optional tool to generate AI-powered summaries of downloaded reading materials using a **local LLM (Ollama)**. This ensures privacy, costs nothing, and runs entirely on your own hardware (GPU recommended).
 
-### Setup
+### Prerequisites
 
-1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/).
-2. Set your API key as an environment variable:
+1. **Install Ollama**: Download and install from [ollama.com](https://ollama.com).
+2. **Pull the Model**: Open your terminal and run:
    ```bash
-   # Windows
-   set GEMINI_API_KEY=your_actual_key_here
-
-   # macOS/Linux
-   export GEMINI_API_KEY=your_actual_key_here
+   ollama pull llama3.1
    ```
+   *Note: This downloads the Llama 3.1 8B model (~4.7GB). If you have limited VRAM (<6GB), you can try a smaller model like `ollama pull llama3.2`.*
 
 ### Usage
 
@@ -85,10 +82,23 @@ python summarize_readings.py
 ```
 
 This script will:
-1. Scan your `coursera_downloads` directory for HTML reading files.
-2. Use Gemini to generate a concise summary of the content.
-3. Use contextual memory to ensure summaries focus on *new* information, avoiding repetition from previous lessons.
-4. Inject the summary box directly into the top of each HTML file for easy reviewing.
+1. **Auto-start Ollama**: It automatically checks if the Ollama server is running and starts it in the background if needed.
+2. **Scan Files**: Finds all HTML reading files in your `coursera_downloads` directory.
+3. **Generate Summaries**: Uses the local Llama 3.1 model to read the content and generate a concise summary in **Hebrew**.
+   - It maintains a "global context" of what has been read so far to avoid repeating known concepts in subsequent files.
+4. **Inject Content**: The summary is injected into the top of the HTML file as a styled box.
+
+### Configuration
+
+You can modify `summarize_readings.py` to change settings:
+
+- **Model**: Change `MODEL_NAME = "llama3.1"` to use a different model (e.g., "llama3.2" or "mistral").
+- **Context Window**: Default is `num_ctx: 4096` to fit comfortably in 6GB VRAM. If you have a powerful GPU (12GB+), you can increase this to `8192` for larger files.
+
+### Troubleshooting
+
+- **"First file takes longer"**: The first time the script runs, Ollama loads the 5GB model from disk into your GPU VRAM. This can take 10-60 seconds depending on your drive speed. Subsequent files will be processed much faster.
+- **CPU vs GPU**: If the script is slow, check Task Manager to see if your GPU is being used. If not, ensure your NVIDIA drivers are up to date. The script forces a smaller context window (4096) to help models fit on smaller cards (like RTX 3050/4050).
 
 ## How It Works
 
