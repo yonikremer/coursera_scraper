@@ -3,9 +3,16 @@ from pathlib import Path
 from typing import Tuple
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, JavascriptException, TimeoutException, WebDriverException, ElementClickInterceptedException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    JavascriptException,
+    WebDriverException,
+    ElementClickInterceptedException,
+)
 from ..files import get_or_move_path
 from .common import AssetManager
+
 
 class QuizExtractor:
     def __init__(self, driver, session, asset_manager: AssetManager):
@@ -13,124 +20,390 @@ class QuizExtractor:
         self.session = session
         self.asset_manager = asset_manager
 
-    def process(self, course_dir: Path, module_dir: Path, item_counter: int,
-                                    title: str, item_type: str) -> Tuple[bool, int]:
+    def process(
+        self,
+        course_dir: Path,
+        module_dir: Path,
+        item_counter: int,
+        title: str,
+        item_type: str,
+    ) -> Tuple[bool, int]:
         """Process and save assignment or quiz content."""
         downloaded_count = 0
         downloaded_something = False
 
+        print(f"  Processing {item_type}...")
+
+        # If it's an assignment-submission or not yet on attempt page, try to click start
+        # Special case for 'assignment-submission' as requested: it often has a start button
+        # that doesn't change the URL.
+        is_attempt_page = (
+            "/attempt" in self.driver.current_url
+            or "/assignment-submission" in self.driver.current_url
+        )
+
+        # Try clicking start button if we're not on a known attempt page,
+        # or if we are on a submission page that might need a click to show the actual assignment.
+        if not is_attempt_page or "/assignment-submission" in self.driver.current_url:
+            if self._click_assignment_start_button():
+                time.sleep(4)
+            elif not is_attempt_page:
+                print("  ℹ Already on assignment page or no start button found")
+
+        # Wait for content to load
+        print(f"  Waiting for {item_type} content...")
+        # We want to wait for actual quiz elements, NOT just any form (which might be a search bar)
+        # We also check that the search bar is NOT the ONLY thing present if it's there.
+        quiz_selectors = [
+            "div#TUNNELVISIONWRAPPER_CONTENT_ID",
+            "div.rc-FormPartsQuestion",
+            "div.rc-CMLOrHTML",
+            ".rc-AssignmentPart",
+            ".rc-PracticeAssignment",
+            "div[data-testid^='part-Submission']",
+        ]
+
+        def content_loaded(d):
+            if "/attempt" in d.current_url:
+                return True
+            for sel in quiz_selectors:
+                elements = d.find_elements(By.CSS_SELECTOR, sel)
+                if elements:
+                    # Verify at least one element is NOT a search bar container
+                    for el in elements:
+                        if "rc-InCourseSearchBar" not in el.get_attribute("innerHTML"):
+                            return True
+            return False
+
+        WebDriverWait(self.driver, 45).until(content_loaded)
+        time.sleep(5)  # Give it plenty of time for mathjax/images
+
+        print(f"  Current URL: {self.driver.current_url}")
+
+        # Extract additional metadata (like due date, weight, etc.).
+        metadata = ""
         try:
-            print(f"  Processing {item_type}...")
-
-            # If it's an assignment-submission or not yet on attempt page, try to click start
-            # Special case for 'assignment-submission' as requested: it often has a start button 
-            # that doesn't change the URL.
-            is_attempt_page = '/attempt' in self.driver.current_url or '/assignment-submission' in self.driver.current_url
-            
-            # Try clicking start button if we're not on a known attempt page, 
-            # or if we are on a submission page that might need a click to show the actual assignment.
-            if not is_attempt_page or '/assignment-submission' in self.driver.current_url:
-                if self._click_assignment_start_button():
-                    time.sleep(4)
-                elif not is_attempt_page:
-                    print(f"  ℹ Already on assignment page or no start button found")
-
-            # Wait for content to load
-            print(f"  Waiting for {item_type} content...")
-            try:
-                WebDriverWait(self.driver, 30).until(
-                    lambda d: '/attempt' in d.current_url or 
-                             d.find_elements(By.CSS_SELECTOR, "div#TUNNELVISIONWRAPPER_CONTENT_ID, div.rc-FormPartsQuestion, form, div.rc-CMLOrHTML, .rc-AssignmentPart, .rc-PracticeAssignment, div[data-testid^='part-Submission'], [data-testid='header-right']")
+            # Look for header info in modern view.
+            header_info = self.driver.find_elements(
+                By.CSS_SELECTOR, "[data-testid='header-right'], .rc-AssignmentHeader"
+            )
+            if header_info:
+                metadata = " • ".join(
+                    [
+                        el.text.strip().replace("\n", " ")
+                        for el in header_info
+                        if el.text.strip()
+                    ]
                 )
-                time.sleep(2)
-            except TimeoutException:
-                print(f"  ⚠ Timeout waiting for {item_type} content, but proceeding anyway...")
-            except WebDriverException as e:
-                print(f"  ⚠ Error while waiting: {e}")
+        except (NoSuchElementException, StaleElementReferenceException):
+            pass  # Metadata extraction is optional.
 
-            print(f"  Current URL: {self.driver.current_url}")
+        # Extract assignment content.
+        assignment_content, image_count = self._extract_assignment_content(
+            item_dir=module_dir
+        )
+        downloaded_count += image_count
 
-            # Extract additional metadata (like due date, weight, etc.).
-            metadata = ""
-            try:
-                # Look for header info in modern view.
-                header_info = self.driver.find_elements(By.CSS_SELECTOR, "[data-testid='header-right'], .rc-AssignmentHeader")
-                if header_info:
-                    metadata = " • ".join([el.text.strip().replace('\n', ' ') for el in header_info if el.text.strip()])
-            except (NoSuchElementException, StaleElementReferenceException):
-                pass  # Metadata extraction is optional.
+        if assignment_content:
+            # Download CSS.
+            css_links_html = self.asset_manager.download_course_css(item_dir=module_dir)
 
-            # Extract assignment content.
-            assignment_content, image_count = self._extract_assignment_content(item_dir=module_dir)
-            downloaded_count += image_count
+            filename = f"{item_counter:03d}_{title}_{item_type}.html"
+            assignment_file = get_or_move_path(course_dir, module_dir, filename)
 
-            if assignment_content:
-                # Download CSS.
-                css_links_html = self.asset_manager.download_course_css(item_dir=module_dir)
-                
-                filename = f"{item_counter:03d}_{title}_{item_type}.html"
-                assignment_file = get_or_move_path(course_dir, module_dir, filename)
-                
-                # Save to HTML file.
-                self._save_assignment_html(assignment_file, title, item_type, assignment_content, css_links_html, metadata)
-                
-                downloaded_count += 1
-                downloaded_something = True
-                print(f"  ✓ {item_type.title()} content saved (with {image_count} images)")
+            # Save to HTML file.
+            self._save_assignment_html(
+                assignment_file,
+                title,
+                item_type,
+                assignment_content,
+                css_links_html,
+                metadata,
+            )
 
-                # Try to click 'Save draft' button to avoid annoying popups on exit.
-                self._click_save_draft_button()
-            else:
-                print(f"  ⚠ No assignment content found to save")
+            downloaded_count += 1
+            downloaded_something = True
+            print(f"  ✓ {item_type.title()} content saved (with {image_count} images)")
 
-        except WebDriverException as e:
-            print(f"  ⚠ Error processing {item_type}: {e}")
+            # Try to click 'Save draft' button to avoid annoying popups on exit.
+            self._click_save_draft_button()
+        else:
+            print("  ⚠ No assignment content found to save")
 
         return downloaded_something, downloaded_count
 
     def _click_assignment_start_button(self) -> bool:
-        """Click the start/resume button for an assignment or quiz."""
-        # Common Coursera button texts for starting assignments/quizzes.
-        button_texts = ["Start", "Start Assignment", "Resume", "Continue", "Start Quiz", "Retake Quiz", "Review", "Open", "Launch"]
-        
-        for btn_text in button_texts:
-            try:
-                # Try to find button or link with the text.
-                xpath = f"//button[contains(., '{btn_text}')] | //a[contains(., '{btn_text}')]"
-                start_btn = self.driver.find_element(By.XPATH, xpath)
-                
-                if start_btn.is_displayed() and start_btn.is_enabled():
-                    # Scroll into view to ensure it's clickable.
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_btn)
-                    time.sleep(1)
-                    start_btn.click()
-                    print(f"  ✓ Clicked '{btn_text}' button")
+        """Click the start/resume button for an assignment or quiz, handling multiple popups."""
+        clicked_any = False
+        url_before_click = self.driver.current_url
+
+        quiz_selectors = [
+            "div#TUNNELVISIONWRAPPER_CONTENT_ID",
+            "div.rc-FormPartsQuestion",
+            "div.rc-CMLOrHTML",
+            ".rc-AssignmentPart",
+            ".rc-PracticeAssignment",
+            "div[data-testid^='part-Submission']",
+        ]
+
+        def is_quiz_loaded():
+            for sel in quiz_selectors:
+                if self.driver.find_elements(By.CSS_SELECTOR, sel):
                     return True
-            except (NoSuchElementException, StaleElementReferenceException, ElementClickInterceptedException):
-                continue
-            except WebDriverException as e:
-                print(f"  ⚠ Browser error clicking start button: {e}")
-                continue
-        return False
+            return False
+
+        def is_safe_to_click(element) -> bool:
+            """Check if the button is safe to click (not a navigation button)."""
+            try:
+                # Check 1: Check attributes directly
+                classes = element.get_attribute("class") or ""
+                test_id = element.get_attribute("data-testid") or ""
+                aria_label = element.get_attribute("aria-label") or ""
+                text_content = element.text.lower()
+
+                # Navigation buttons to avoid
+                if (
+                    "ItemNavigation" in classes
+                    or "next-item" in test_id
+                    or "prev-item" in test_id
+                ):
+                    return False
+
+                # specific check for the "Next" arrow button which sometimes has "Next" text hidden
+                if "next item" in aria_label.lower():
+                    return False
+
+                # Exclude specific text that indicates navigation or unwanted popups
+                if "continue learning" in text_content:
+                    return False
+                if "next item" in text_content:
+                    return False
+
+                # Check 2: Check parents for navigation containers
+                # We can do this by checking if it's inside a known navigation footer
+                parent_nav = element.find_elements(
+                    By.XPATH,
+                    "./ancestor::div[contains(@class, 'course-item-navigation-footer')] | ./ancestor::div[contains(@class, 'rc-ItemNavigation')]",
+                )
+                if parent_nav:
+                    return False
+
+                return True
+            except Exception:
+                return False
+
+        def click_and_validate(btn, label) -> bool:
+            """Click a button and verify we didn't get redirected away from the quiz context."""
+            try:
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center'});", btn
+                )
+                time.sleep(1)
+                self.driver.execute_script("arguments[0].click();", btn)
+                print(f"  ✓ Clicked {label}")
+
+                time.sleep(2)
+
+                # Check URL
+                current_url = self.driver.current_url
+
+                # Permitted paths for staying in context
+                valid_paths = ["/assignment", "/quiz", "/exam", "/attempt"]
+
+                is_wrong_item = "/learn/" in current_url and not any(
+                    x in current_url for x in valid_paths
+                )
+
+                # If we went to home or a lecture/reading (which don't have the valid_paths), go back.
+                if "/home/" in current_url or "/home?" in current_url or is_wrong_item:
+                    print(
+                        f"  ℹ Redirected away (to {current_url}), returning to: {url_before_click}"
+                    )
+                    self.driver.get(url_before_click)
+                    time.sleep(3)
+                    return False
+
+                return True
+            except Exception as e:
+                print(f"  ⚠ Error clicking validation: {e}")
+                return False
+
+        # We try multiple rounds to handle consecutive popups (e.g. Continue -> Start)
+        for round in range(3):
+            if is_quiz_loaded():
+                break
+
+            found_in_round = False
+
+            # 0. Handle "Continue Learning" specifically by closing it if possible.
+            # This popup often appears when revisiting content; clicking the main button skips to the next item.
+            try:
+                # Look for a modal or dialog containing "Continue Learning"
+                # We use a broad search for the text within a dialog/modal container
+                cl_popups = self.driver.find_elements(
+                    By.XPATH,
+                    "//div[@role='dialog'][.//*[contains(text(), 'Continue Learning')]] | "
+                    + "//div[contains(@class, 'modal')][.//*[contains(text(), 'Continue Learning')]]",
+                )
+
+                if not cl_popups:
+                    # Fallback: check if the button itself exists, maybe find its parent modal
+                    cl_btns = self.driver.find_elements(
+                        By.XPATH, "//button[contains(., 'Continue Learning')]"
+                    )
+                    if cl_btns and any(b.is_displayed() for b in cl_btns):
+                        # If we see the button, try to close ANY visible modal
+                        cl_popups = self.driver.find_elements(
+                            By.XPATH,
+                            "//div[@role='dialog'] | //div[contains(@class, 'modal')]",
+                        )
+
+                for popup in cl_popups:
+                    if popup.is_displayed():
+                        # Try to find a close button inside this popup
+                        close_selectors = [
+                            ".//button[@aria-label='Close']",
+                            ".//button[@aria-label='close']",
+                            ".//button[contains(@class, 'close')]",
+                            ".//button[contains(@class, 'Close')]",
+                            ".//svg[contains(@data-test-icon, 'close')]/ancestor::button",
+                            ".//span[contains(@class, 'cui-icon')][contains(., 'close')]/ancestor::button",
+                        ]
+                        closed = False
+                        for sel in close_selectors:
+                            close_btns = popup.find_elements(By.XPATH, sel)
+                            for c_btn in close_btns:
+                                if c_btn.is_displayed():
+                                    print(
+                                        "  ℹ Found 'Continue Learning' popup, attempting to close..."
+                                    )
+                                    self.driver.execute_script(
+                                        "arguments[0].click();", c_btn
+                                    )
+                                    print("  ✓ Closed 'Continue Learning' popup")
+                                    time.sleep(2)
+                                    closed = True
+                                    break
+                            if closed:
+                                break
+                        if closed:
+                            break
+            except Exception:
+                pass
+
+            # 1. Check for Barrier buttons (Honor Code, Agreements, Continue)
+            # REMOVED "Continue" from this list as it is too ambiguous and often hits pagination
+            barriers = ["I agree", "Agree", "Accept", "Confirm", "I understand"]
+            for b_text in barriers:
+                try:
+                    xpath = f"//button[contains(., '{b_text}')] | //a[contains(., '{b_text}')] | //span[text()='{b_text}']/ancestor::button"
+                    btns = self.driver.find_elements(By.XPATH, xpath)
+                    for btn in btns:
+                        if btn.is_displayed() and btn.is_enabled():
+                            if is_safe_to_click(btn):
+                                if "rc-InCourseSearchBar" in btn.get_attribute(
+                                    "outerHTML"
+                                ):
+                                    continue
+
+                                if click_and_validate(btn, f"barrier: '{b_text}'"):
+                                    clicked_any = True
+                                    found_in_round = True
+                                break
+                    if found_in_round:
+                        break
+                except Exception:
+                    continue
+
+                # Fallback purely for "Continue" button but with strict safety checks
+                # matching only exact "Continue" or "Continue" inside a modal-like structure
+                if not found_in_round:
+                    try:
+                        actions = self.driver.find_elements(
+                            By.XPATH, "//button[contains(., 'Continue')]"
+                        )
+                        for btn in actions:
+                            if (
+                                btn.is_displayed()
+                                and btn.is_enabled()
+                                and is_safe_to_click(btn)
+                            ):
+                                # Double check it's NOT a next item button (sometimes text is just Continue)
+                                # We prefer buttons inside dialogs or main content
+                                parents = btn.find_elements(
+                                    By.XPATH,
+                                    "./ancestor::div[@role='dialog'] | ./ancestor::div[contains(@class,'modal')]",
+                                )
+                                is_modal = len(parents) > 0
+
+                                if is_modal or "Continue" == btn.text.strip():
+                                    if click_and_validate(btn, "'Continue'"):
+                                        clicked_any = True
+                                        found_in_round = True
+                                    break
+                    except Exception:
+                        pass
+
+            # 2. Check for actual Start/Resume buttons if no barrier was clicked or if still not loaded
+            if not is_quiz_loaded():
+                button_texts = [
+                    "Start",
+                    "Start Assignment",
+                    "Resume",
+                    "Start Quiz",
+                    "Retake Quiz",
+                    "Review",
+                    "Open",
+                    "Launch",
+                    "Go to Assignment",
+                    "Try again",
+                    "Continue to Quiz",
+                ]
+                for btn_text in button_texts:
+                    xpath = f"//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{btn_text.lower()}')] | //a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{btn_text.lower()}')]"
+                    buttons = self.driver.find_elements(By.XPATH, xpath)
+                    for btn in buttons:
+                        if btn.is_displayed() and btn.is_enabled():
+                            if is_safe_to_click(btn):
+                                btn_label = btn.text.strip() or btn_text
+                                if click_and_validate(btn, f"start: '{btn_label}'"):
+                                    clicked_any = True
+                                    found_in_round = True
+                                break
+                    if found_in_round:
+                        break
+
+            print("quiz is loaded, done")
+            if not found_in_round:
+                break
+
+        return clicked_any
 
     def _extract_assignment_content(self, item_dir: Path = None) -> Tuple[str, int]:
         """Extract the HTML content of the assignment."""
         downloaded_count = 0
         selectors = [
             "div#TUNNELVISIONWRAPPER_CONTENT_ID",
-            "div.rc-FormPartsQuestion", 
-            "div.rc-CMLOrHTML", 
+            "div.rc-FormPartsQuestion",
+            "div.rc-CMLOrHTML",
             "div[data-testid^='part-Submission']",
-            ".rc-AssignmentPart", 
+            ".rc-AssignmentPart",
             ".rc-PracticeAssignment",
-            "form",
-            "div[role='main']", 
-            "main"
+            "form:not([data-test='rc-InCourseSearchBar'])",
+            "div[role='main']",
+            "main",
         ]
-        
+
         # Try to remove any AI instructions if they are present before extracting.
         try:
             self.driver.execute_script("""
+                // Remove search bars that sometimes appear instead of content
+                const searchBars = document.querySelectorAll('[data-test="rc-InCourseSearchBar"]');
+                searchBars.forEach(el => {
+                    // Only remove if it's not the ONLY thing, but actually we probably never want it in the saved HTML
+                    el.closest('form')?.remove() || el.remove();
+                });
+
                 // Remove AI instructions and integrity blocks
                 const aiInstructions = document.querySelectorAll('[data-ai-instructions="true"], [data-testid="content-integrity-instructions"]');
                 aiInstructions.forEach(el => el.remove());
@@ -154,7 +427,7 @@ class QuizExtractor:
             """)
         except JavascriptException:
             pass  # Script failure is non-critical.
-        
+
         for selector in selectors:
             try:
                 # Find all matching elements and combine them if there are multiple (like questions).
@@ -163,10 +436,20 @@ class QuizExtractor:
                     content = ""
                     for elem in elements:
                         try:
+                            inner_html = elem.get_attribute("innerHTML")
+                            # Skip if this element is JUST a search bar
+                            if (
+                                "rc-InCourseSearchBar" in inner_html
+                                and len(inner_html) < 2000
+                            ):
+                                continue
+
                             # Localize images.
-                            downloaded_count += self.asset_manager.localize_images(elem, item_dir=item_dir)
-                                
-                            html = elem.get_attribute('outerHTML')
+                            downloaded_count += self.asset_manager.localize_images(
+                                elem, item_dir=item_dir
+                            )
+
+                            html = elem.get_attribute("outerHTML")
                             if html and len(html) > 100:
                                 content += html + "\n<br>\n"
                         except StaleElementReferenceException:
@@ -176,16 +459,26 @@ class QuizExtractor:
             except (NoSuchElementException, StaleElementReferenceException):
                 continue
             except WebDriverException as e:
-                print(f"  ⚠ Browser error extracting content with selector '{selector}': {e}")
+                print(
+                    f"  ⚠ Browser error extracting content with selector '{selector}': {e}"
+                )
                 continue
         return "", 0
 
-    def _save_assignment_html(self, filepath: Path, title: str, item_type: str, content: str, css_links_html: str = "", metadata: str = ""):
+    def _save_assignment_html(
+        self,
+        filepath: Path,
+        title: str,
+        item_type: str,
+        content: str,
+        css_links_html: str = "",
+        metadata: str = "",
+    ):
         """Save assignment content to an HTML file."""
         # Format title: replace underscores with spaces and title case
-        display_title = title.replace('_', ' ').title()
-        metadata_html = f"<p><strong>Info:</strong> {metadata}</p>" if metadata else ""
-        with open(filepath, 'w', encoding='utf-8') as f:
+        display_title = title.replace("_", " ").title()
+
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(f"""<!DOCTYPE html>
 <html>
 <head>
@@ -362,11 +655,13 @@ class QuizExtractor:
     def _click_save_draft_button(self):
         """Try to click the 'Save draft' button if it exists."""
         try:
-            save_btn = self.driver.find_element(By.XPATH,
-                "//button[contains(., 'Save draft') or contains(., 'Save Draft')]")
+            save_btn = self.driver.find_element(
+                By.XPATH,
+                "//button[contains(., 'Save draft') or contains(., 'Save Draft')]",
+            )
             if save_btn.is_displayed() and save_btn.is_enabled():
                 save_btn.click()
-                print(f"  ✓ Clicked 'Save draft'")
+                print("  ✓ Clicked 'Save draft'")
                 time.sleep(2)
         except NoSuchElementException:
             # Button not found; this is expected.
