@@ -5,6 +5,8 @@ Downloads all course materials from enrolled Coursera courses/professional certi
 """
 import argparse
 from coursera.scraper import CourseraScraper
+from generate_dashboard import generate_dashboard
+from create_playlists import process_all_courses
 
 def main():
     parser = argparse.ArgumentParser(
@@ -50,6 +52,16 @@ def main():
     # Note: Currently the course list is hardcoded in download_certificate inside the scraper
     # You might want to pass it or extract it from cert_url in the future.
     scraper.download_certificate(cert_url=args.cert_url)
+    
+    # Generate Playlists
+    print("\n" + "=" * 60)
+    print("Generating Course Playlists...")
+    process_all_courses(args.output_dir)
+
+    # Generate the offline dashboard
+    print("Generating Offline Dashboard...")
+    generate_dashboard()
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
