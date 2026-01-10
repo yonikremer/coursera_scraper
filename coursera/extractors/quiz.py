@@ -61,12 +61,12 @@ class QuizExtractor:
                 pass  # Metadata extraction is optional.
 
             # Extract assignment content.
-            assignment_content, image_count = self._extract_assignment_content()
+            assignment_content, image_count = self._extract_assignment_content(item_dir=module_dir)
             downloaded_count += image_count
 
             if assignment_content:
                 # Download CSS.
-                css_links_html = self.asset_manager.download_course_css()
+                css_links_html = self.asset_manager.download_course_css(item_dir=module_dir)
                 
                 filename = f"{item_counter:03d}_{title}_{item_type}.html"
                 assignment_file = get_or_move_path(course_dir, module_dir, filename)
@@ -113,7 +113,7 @@ class QuizExtractor:
                 continue
         return False
 
-    def _extract_assignment_content(self) -> Tuple[str, int]:
+    def _extract_assignment_content(self, item_dir: Path = None) -> Tuple[str, int]:
         """Extract the HTML content of the assignment."""
         downloaded_count = 0
         selectors = [
@@ -131,15 +131,22 @@ class QuizExtractor:
         # Try to remove any AI instructions if they are present before extracting.
         try:
             self.driver.execute_script("""
-                const aiInstructions = document.querySelectorAll('[data-ai-instructions="true"]');
+                // Remove AI instructions and integrity blocks
+                const aiInstructions = document.querySelectorAll('[data-ai-instructions="true"], [data-testid="content-integrity-instructions"]');
                 aiInstructions.forEach(el => el.remove());
 
-                // Remove messy quiz footer elements (Like/Dislike, Honor Code, Submit, Save Draft)
+                // Remove messy quiz footer elements (Like/Dislike, Honor Code, Submit, Save Draft, points)
                 const messySelectors = [
                     '[data-testid="like-button"]',
                     '[data-testid="dislike-button"]',
+                    '[data-testid="part-points"]',
+                    '[data-testid="visually-hidden"]',
                     '[data-e2e="AttemptSubmitControls"]',
-                    '[aria-label="Text Formatting"]'
+                    '[aria-label="Text Formatting"]',
+                    '[data-testid="report-problem-button"]',
+                    '[data-testid="flag-content-button"]',
+                    '.rc-ReportProblem',
+                    '.rc-A11yScreenReaderOnly'
                 ];
                 messySelectors.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
@@ -157,7 +164,7 @@ class QuizExtractor:
                     for elem in elements:
                         try:
                             # Localize images.
-                            downloaded_count += self.asset_manager.localize_images(elem)
+                            downloaded_count += self.asset_manager.localize_images(elem, item_dir=item_dir)
                                 
                             html = elem.get_attribute('outerHTML')
                             if html and len(html) > 100:
@@ -175,76 +182,179 @@ class QuizExtractor:
 
     def _save_assignment_html(self, filepath: Path, title: str, item_type: str, content: str, css_links_html: str = "", metadata: str = ""):
         """Save assignment content to an HTML file."""
+        # Format title: replace underscores with spaces and title case
+        display_title = title.replace('_', ' ').title()
         metadata_html = f"<p><strong>Info:</strong> {metadata}</p>" if metadata else ""
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{title}</title>
+    <title>{display_title}</title>
 {css_links_html}
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 30px; line-height: 1.6; color: #1f1f1f; background: #fff; }}
-        img {{ max-width: 100%; height: auto; display: block; margin: 25px auto; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        code {{ background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 85%; }}
-        pre {{ background: #f5f5f5; padding: 16px; border-radius: 6px; overflow-x: auto; line-height: 1.45; margin-bottom: 20px; }}
-        .question {{ margin: 20px 0; padding: 20px; background: #f9f9f9; border-left: 5px solid #007bff; border-radius: 4px; }}
-        hr {{ border: 0; border-top: 1px solid #eee; margin: 40px 0; }}
-        h1 {{ font-size: 32px; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-bottom: 16px; }}
-        .assignment-content {{ margin-top: 20px; }}
+        *, *::before, *::after {{
+            user-select: none !important;
+            -webkit-user-select: none !important;
+            -moz-user-select: none !important;
+            -ms-user-select: none !important;
+            outline: none !important;
+            -webkit-tap-highlight-color: transparent !important;
+        }}
         
-        /* Quiz/Assignment layout fixes */
-        .rc-FormPartsQuestion {{ margin-bottom: 30px; padding: 20px; background: #fdfdfd; border: 1px solid #eee; border-radius: 8px; }}
-        .rc-Option {{ margin: 5px 0; position: relative; }}
+        *::selection {{
+            background-color: transparent !important;
+            color: inherit !important;
+            text-shadow: none !important;
+        }}
+        
+        *::-moz-selection {{
+            background-color: transparent !important;
+            color: inherit !important;
+            text-shadow: none !important;
+        }}
+
+        /* Make text containers pass-through clicks to parent label to prevent selection while keeping clicks functional */
+        .rc-Option .rc-CML, 
+        .rc-Option ._bc4egv,
+        .rc-Option [data-testid="cml-viewer"],
+        .rc-Option p {{
+            pointer-events: none !important;
+        }}
+
+        body {{ 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            max-width: 900px; 
+            margin: 0 auto; 
+            padding: 40px 20px; 
+            line-height: 1.6; 
+            color: #333; 
+            background: #f5f7f9; 
+            -webkit-touch-callout: none !important;
+        }}
+        .container {{
+            background: #fff;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }}
+        h1 {{ font-size: 2.2rem; color: #0056d2; margin-bottom: 10px; border-bottom: 2px solid #e1e4e8; padding-bottom: 10px; }}
+        .meta {{ color: #666; font-size: 0.9rem; margin-bottom: 30px; }}
+        img {{ max-width: 100%; height: auto; display: block; margin: 25px auto; border-radius: 8px; }}
+        code {{ background: #f0f2f5; padding: 3px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; }}
+        pre {{ background: #1e1e1e; color: #d4d4d4; padding: 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; }}
+        
+        /* Question Blocks */
+        [data-testid^="part-Submission"], .rc-FormPartsQuestion, .rc-AssignmentPart {{
+            margin-bottom: 40px;
+            padding: 25px;
+            background: #fff;
+            border: 1px solid #e1e4e8;
+            border-radius: 12px;
+            transition: transform 0.2s;
+        }}
+        [data-testid^="part-Submission"]:hover {{ border-color: #0056d2; }}
+        
+        /* Question Alignment Fix */
+        .css-x3q7o9 {{ display: flex !important; align-items: flex-start !important; gap: 10px !important; }}
+        .css-lyseg0 {{ 
+            display: flex !important; 
+            align-items: center !important; 
+            white-space: nowrap !important; 
+            margin-top: 2px !important; 
+        }}
+        .css-ybrhvy {{ flex: 1 !important; }}
+        .css-6ecy9b {{ margin: 0 !important; font-size: 1.1rem !important; }}
+
+        /* Question Legends/Titles */
+        [data-testid="legend"], .rc-FormPartsQuestion__title {{
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+            color: #1f1f1f;
+        }}
+        
+        /* Options */
+        .rc-Option {{ 
+            margin: 12px 0; 
+            position: relative; 
+            border: 1px solid #edeff1;
+            border-radius: 8px;
+            background: #fafbfc;
+            transition: all 0.2s;
+        }}
+        .rc-Option, .rc-Option * {{ 
+            -webkit-tap-highlight-color: transparent !important;
+            outline: none !important;
+        }}
         .rc-Option label {{ 
             display: flex !important; 
-            align-items: flex-start !important; 
+            align-items: center !important; 
             cursor: pointer; 
-            gap: 10px; 
-            padding: 10px; 
-            border-radius: 6px; 
-            transition: background 0.2s; 
-            position: relative; 
+            padding: 15px; 
+            gap: 15px;
+            margin: 0 !important;
+            width: 100%;
+            box-sizing: border-box;
         }}
-        .rc-Option label:hover {{ background: #f5f5f5; }}
+        .rc-Option:hover {{ background: #f0f4f8; border-color: #d0d7de; }}
         
-        /* Hide native radio/checkbox but keep it clickable and functional */
+        /* Clean up Coursera's custom input icons */
+        ._1e7axzp, .cui-icon, ._2y6w19 {{ 
+            display: inline-flex;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #0056d2;
+            border-radius: 50%;
+            background: #fff;
+            flex-shrink: 0;
+        }}
+        
+        /* If it's a checkbox, make it square */
+        [data-testid="part-Submission_CheckboxQuestion"] ._1e7axzp {{
+            border-radius: 4px;
+        }}
+
+        /* Hide the messy SVG inside the icon span and use CSS instead when checked */
+        ._1e7axzp svg {{ display: none !important; }}
+        
         .rc-Option input[type="radio"], 
         .rc-Option input[type="checkbox"] {{ 
-            opacity: 0;
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 5;
+            opacity: 0;
             cursor: pointer;
-            margin: 0;
         }}
 
         /* Highlight selected option */
-        .rc-Option:has(input:checked) label {{
-            background-color: #e8f0fe;
+        .rc-Option:has(input:checked) {{
+            background-color: transparent;
+            border-color: transparent;
         }}
-        .rc-Option input:checked + span {{
-            color: #1a73e8;
-            font-weight: 600;
+        .rc-Option input:checked + span, 
+        .rc-Option:has(input:checked) ._1e7axzp {{
+            background-color: #0056d2;
+            box-shadow: inset 0 0 0 4px #fff;
+            border-radius: 50%;
         }}
-
-        /* Ensure Coursera's custom icons and text are aligned */
-        ._1e7axzp, .cui-icon, ._htmk7zm + span {{ display: flex; align-items: center; justify-content: center; flex-shrink: 0; }}
-        .rc-Option label span {{ line-height: 1.5; }}
-        #TUNNELVISIONWRAPPER_CONTENT_ID {{ padding: 0 !important; margin: 0 !important; }}
+        
+        .rc-CML {{ font-size: 1rem; }}
+        .rc-CML p {{ margin: 0; }}
+        
+        hr {{ border: 0; border-top: 1px solid #d0d7de; margin: 30px 0; }}
+        a {{ color: #0056d2; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
-    <p><strong>Type:</strong> {item_type.title()}</p>
-    {metadata_html}
-    <p><strong>URL:</strong> {self.driver.current_url}</p>
-    <hr>
-    <div class="assignment-content">
-        {content}
+    <div class="container">
+        <h1>{display_title}</h1>
+        <div class="meta">
+            <span><strong>Type:</strong> {item_type.title()}</span>
+            {f" | <span><strong>Info:</strong> {metadata}</span>" if metadata else ""}
+        </div>
+        <div class="assignment-content">
+            {content}
+        </div>
     </div>
 </body>
 </html>""")
