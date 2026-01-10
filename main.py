@@ -6,7 +6,6 @@ Downloads all course materials from enrolled Coursera courses/professional certi
 import argparse
 from pathlib import Path
 from coursera.scraper import CourseraScraper
-from generate_dashboard import generate_dashboard
 from create_playlists import process_all_courses
 from create_course_navigator import scan_and_generate
 
@@ -63,11 +62,6 @@ def main():
     # Generate Navigation
     print("Updating Course Navigation...")
     scan_and_generate(Path(args.output_dir))
-
-    # Generate the offline dashboard
-    print("Generating Offline Dashboard...")
-    generate_dashboard()
-    print("=" * 60)
 
 if __name__ == "__main__":
     main()

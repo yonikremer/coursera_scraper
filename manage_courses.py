@@ -1,7 +1,6 @@
 import sys
 import subprocess
 import os
-from generate_dashboard import generate_dashboard
 
 def run_script(script_name, args=None):
     """Runs a python script using subprocess."""
@@ -27,7 +26,6 @@ def main_menu():
         print("2. 🤖 Translate Subtitles (Ollama required)")
         print("3. 📝 Summarize Readings (Ollama required)")
         print("4. 🎥 Apply Subtitles for VLC (Rename .vtt)")
-        print("5. 🔄 Update Offline Dashboard")
         print("6. 🎵 Generate Video Playlists (.wpl)")
         print("7. 🧭 Update Course Navigation (Sidebar)")
         print("8. 🛠️  Fix Links (Legacy)")
@@ -51,32 +49,21 @@ def main_menu():
             if email:
                 args.extend(["--email", email])
             run_script("main.py", args=args)
-            # Auto-update dashboard after download
-            print("\nUpdating dashboard...")
-            generate_dashboard()
-            
+
         elif choice == '2':
             print("\n-- Translate Subtitles --")
             print("Ensure Ollama is running with 'gemma3-translator:4b'.")
             run_script("translate_captions.py")
-            print("\nUpdating dashboard to include new subtitles...")
-            generate_dashboard()
-            
+
         elif choice == '3':
             print("\n-- Summarize Readings --")
             print("Ensure Ollama is running with 'llama3.1'.")
             run_script("summarize_readings.py")
-            # Summaries are embedded in HTML, no dashboard update strictly needed, 
-            # but good practice in case titles change (unlikely).
-            
+
         elif choice == '4':
             print("\n-- Apply Subtitles for VLC --")
             run_script("apply_subtitles.py")
-            
-        elif choice == '5':
-            print("\n-- Updating Dashboard --")
-            generate_dashboard()
-            
+
         elif choice == '6':
             print("\n-- Generating Playlists --")
             run_script("create_playlists.py")
