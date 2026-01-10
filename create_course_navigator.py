@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 from pathlib import Path
 from bs4 import BeautifulSoup
 
@@ -145,13 +144,15 @@ def generate_sidebar_html(course_tree, current_file_path):
         
         for item in module['items']:
             # Create relative link
-            target_path = Path(item['nav_path'])
+            target_path = Path(item['nav_path']).resolve()
+            current_parent = current_path_obj.parent.resolve()
             try:
-                rel_link = os.path.relpath(target_path, current_path_obj.parent)
+                rel_link = os.path.relpath(target_path, current_parent)
             except ValueError:
-                rel_link = str(target_path)
+                # Fallback if on different drives on Windows, but should not happen in standalone folder
+                rel_link = target_path.name
 
-            is_item_active = " active" if Path(item['nav_path']).resolve() == current_path_obj.resolve() else ""
+            is_item_active = " active" if target_path == current_path_obj.resolve() else ""
             icon = "🎥" if item['type'] == 'video' else "📄"
             
             sidebar_html += f'<a href="{rel_link}" class="nav-item{is_item_active}"><span class="item-icon">{icon}</span>{item["title"]}</a>'
@@ -246,7 +247,7 @@ def create_video_html(video_path, html_path, course_tree):
     Creates a new HTML file for the video player.
     """
     sidebar = generate_sidebar_html(course_tree, html_path)
-    video_rel = os.path.basename(video_path)
+    video_rel = video_path.name
     
     # Check for subtitles
     sub_tracks = ""
