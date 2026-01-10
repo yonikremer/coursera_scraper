@@ -1,13 +1,14 @@
 # Coursera Material Downloader & AI Summarizer
 
-A comprehensive tool to download your Coursera courses (videos, readings, labs) and generate AI-powered summaries in Hebrew using your local GPU.
+A comprehensive tool to download your Coursera courses localy, to enable online learning while you are offline.
+To improve the learning experience, it generates AI-powered summaries and subtitles in Hebrew using your local GPU.
 
 ## 🚀 Quick Start Guide
 
 ### 1. Prerequisites
 - **Python 3.12+**
 - **Chrome Browser** installed
-- **Ollama** (for AI summaries) - [Download here](https://ollama.com)
+- **Optional: Ollama** (for AI summaries and translations) - [Download here](https://ollama.com)
 
 ### 2. Installation
 1. Clone this repository.
@@ -18,6 +19,7 @@ A comprehensive tool to download your Coursera courses (videos, readings, labs) 
 3. Prepare the AI Model (Run this in your terminal once):
    ```bash
    ollama pull llama3.1
+   ollama pull gemma3-translator:4b
    ```
 
 ### 3. Downloading Courses (`main.py`)
@@ -33,42 +35,35 @@ python main.py
 - 🧪 **Jupyter Labs**: Downloads the `.ipynb` files **plus all data files** (CSV, JSON, etc.) needed to run the lab.
 - 📝 **Assignments & Quizzes**: Saves the content of quizzes and assignments as HTML for offline review.
 - 🏗️ **Organized Folders**: Everything is automatically sorted into Module/Week folders.
+- Shared assets: to save disk space, it uses a shared assets caching folder.
 
 **Important:** A Chrome window will open. **Log in to Coursera** manually with your Google account. Once logged in, the script will automatically take over. **Do not close** the Chrome window.
+After the first time you run the script, it would remember your credentials and the script would be 100% automatic.
 
 ---
 
-### 4. Generating AI Summaries (Optional)
-After your downloads are complete, you can generate Hebrew summaries for all reading materials:
+## Optional steps:
 
+### 4. Subtitle Translation
+Translates all downloaded English subtitles (`_en.vtt`) to Hebrew (`_heb.vtt`) using ollma
 ```bash
-python summarize_readings.py
+ollama pull gemma3-translator:4b
+python translate_captions.py
 ```
 
-**Features:**
-- **Local & Private:** Runs entirely on your computer (no API keys, no cost).
-- **Smart Context:** The AI remembers what you've already read to avoid repeating concepts.
-- **Auto-Inject:** Summaries are added to the top of each HTML reading file.
-
----
-
-## 🛠️ Utility Tools
-
-This repository includes several helper scripts to enhance your offline learning experience:
-
-### 🌍 Subtitle Translation (`translate_captions.py`)
-Translates all downloaded English subtitles (`_en.vtt`) to Hebrew (`_heb.vtt`) using the Google Translate API.
-```bash
-python translate_captions.py --workers 10
-```
-
-### 🎬 Apply Subtitles (`apply_subtitles.py`)
+### 5. 🎬 Apply Subtitles
 Renames the Hebrew subtitles to match your video filenames exactly (e.g., `video.vtt`). This forces players like VLC to load them automatically.
 ```bash
 python apply_subtitles.py
 ```
 
----
+### 6. Generating AI Summaries
+After your downloads are complete, you can generate Hebrew summaries for all reading materials:
+
+```bash
+ollama pull llama3.1
+python summarize_readings.py
+```
 
 ## ⚙️ Configuration
 
@@ -80,8 +75,8 @@ python main.py --email your@email.com --output-dir "my_courses"
 
 ### Customizing AI
 Edit `summarize_readings.py` to change settings:
-- **Model**: Change `MODEL_NAME` (e.g., to "llama3.2" for faster speed on older laptops).
-- **Memory**: The script is optimized for 6GB VRAM GPUs (RTX 3050/4050).
+- **Model**: Change `MODEL_NAME`for faster speed on older laptops.
+- **Memory**: The script is optimized for 6GB VRAM GPUs (RTX 4050).
 
 ---
 
