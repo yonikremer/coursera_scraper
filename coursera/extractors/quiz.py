@@ -369,16 +369,7 @@ class QuizExtractor:
             if not is_quiz_loaded():
                 button_texts = [
                     "Start",
-                    "Start Assignment",
                     "Resume",
-                    "Start Quiz",
-                    "Retake Quiz",
-                    "Review",
-                    "Open",
-                    "Launch",
-                    "Go to Assignment",
-                    "Try again",
-                    "Continue to Quiz",
                 ]
                 for btn_text in button_texts:
                     xpath = f"//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{btn_text.lower()}')] | //a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{btn_text.lower()}')]"
