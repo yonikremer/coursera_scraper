@@ -367,6 +367,28 @@ class QuizExtractor:
 
             # 2. Check for actual Start/Resume buttons if no barrier was clicked or if still not loaded
             if not is_quiz_loaded():
+                # Priority 1: Check for specific data-testid (Standard Coursera Cover Page Action)
+                try:
+                    cover_btns = self.driver.find_elements(
+                        By.CSS_SELECTOR, "[data-testid='CoverPageActionButton']"
+                    )
+                    for btn in cover_btns:
+                        if btn.is_displayed() and btn.is_enabled():
+                            if is_safe_to_click(btn):
+                                btn_label = btn.text.strip() or "CoverPageAction"
+                                if click_and_validate(
+                                    btn, f"CoverPageAction: '{btn_label}'"
+                                ):
+                                    clicked_any = True
+                                    found_in_round = True
+                                    break
+                except Exception:
+                    pass
+
+                if found_in_round:
+                    break
+
+                # Priority 2: Text-based fallback
                 button_texts = [
                     "Start",
                     "Resume",
