@@ -1,6 +1,7 @@
 import time
 import requests
 import warnings
+import shutil
 from pathlib import Path
 from typing import Set, Tuple, List
 from selenium.webdriver.common.by import By
@@ -190,6 +191,16 @@ class CourseraScraper:
         item_type = self._determine_item_type(item_url)
 
         existing_items = find_items(course_dir, module_dir, item_url)
+
+        # Filter out items that are not in the current module directory.
+        # We want to prevent "stealing" files from other modules.
+        # This forces unique downloads for duplicates in different modules.
+        filtered_items = []
+        for item in existing_items:
+            # Resolve paths to ensure we are comparing absolute paths
+            if item.parent.resolve() == module_dir.resolve():
+                filtered_items.append(item)
+        existing_items = filtered_items
 
         # Check if an item already exists before navigating
         if len(existing_items) > 0:
