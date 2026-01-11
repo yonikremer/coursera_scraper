@@ -6,11 +6,13 @@ To improve the learning experience, it generates AI-powered summaries and subtit
 ## 🚀 Quick Start Guide
 
 ### 1. Prerequisites
+
 - **Python 3.12+**
 - **Chrome Browser** installed
 - **Optional: Ollama** (for AI summaries and translations) - [Download here](https://ollama.com)
 
 ### 2. Installation
+
 1. Clone this repository.
 2. Install dependencies:
    ```bash
@@ -22,14 +24,33 @@ To improve the learning experience, it generates AI-powered summaries and subtit
    ollama pull gemma3-translator:4b
    ```
 
-### 3. Downloading Courses (`main.py`)
-This is the core script that logs you in and downloads all course materials.
+### 3. Downloading & Processing (`main.py`)
+
+This is the core script that:
+
+1.  Logs you in and downloads all course materials.
+2.  **Compresses videos** using GPU (if available).
+3.  **Translates captions** to Hebrew.
+4.  **Generates AI summaries** for readings.
+5.  Creates playlists and course navigation.
 
 ```bash
 python main.py
 ```
 
+**Customize the process:**
+You can skip specific steps using flags:
+
+```bash
+# Skip download (process existing files only)
+python main.py --skip-download
+
+# Run download but skip AI post-processing
+python main.py --skip-translate --skip-summary
+```
+
 **What it downloads:**
+
 - 🎬 **Videos**: High-quality (720p) MP4 files.
 - 📄 **Readings & Resources**: PDFs, external links, and reading materials (saved as HTML).
 - 🧪 **Jupyter Labs**: Downloads the `.ipynb` files **plus all data files** (CSV, JSON, etc.) needed to run the lab.
@@ -42,22 +63,29 @@ After the first time you run the script, it would remember your credentials and 
 
 ---
 
-## Optional steps:
+## Manual / Standalone Usage
 
-### 4. Subtitle Translation
+While `main.py` runs everything, you can still run individual steps manually if needed:
+
+### Subtitle Translation
+
 Translates all downloaded English subtitles (`_en.vtt`) to Hebrew (`_heb.vtt`) using ollma
+
 ```bash
 ollama pull gemma3-translator:4b
 python translate_captions.py
 ```
 
-### 5. 🎬 Apply Subtitles
+### Apply Subtitles
+
 Renames the Hebrew subtitles to match your video filenames exactly (e.g., `video.vtt`). This forces players like VLC to load them automatically.
+
 ```bash
 python apply_subtitles.py
 ```
 
-### 6. Generating AI Summaries
+### Generating AI Summaries
+
 After your downloads are complete, you can generate Hebrew summaries for all reading materials:
 
 ```bash
@@ -65,8 +93,10 @@ ollama pull llama3.1
 python summarize_readings.py
 ```
 
-### 7. 📚 Offline Course Navigator
+### 📚 Offline Course Navigator
+
 The main downloader (`main.py`) automatically generates a full course navigator at the end of the download process.
+
 - **Integrated Sidebar**: Jump between lessons easily without leaving the page.
 - **Smart Video Player**: Automatically advances to the next lesson when a video finishes.
 - **Player Preferences**: Remembers your **playback speed** (e.g., 2x) and volume settings across all videos and courses.
@@ -77,13 +107,17 @@ The main downloader (`main.py`) automatically generates a full course navigator 
 ## ⚙️ Configuration
 
 ### Customizing Downloads
+
 You can specify different emails or target directories:
+
 ```bash
 python main.py --email your@email.com --output-dir "my_courses"
 ```
 
 ### Customizing AI
+
 Edit `summarize_readings.py` to change settings:
+
 - **Model**: Change `MODEL_NAME`for faster speed on older laptops.
 - **Memory**: The script is optimized for 6GB VRAM GPUs (RTX 4050).
 
@@ -99,6 +133,7 @@ A: Ensure your NVIDIA drivers are up to date. The script is configured to use yo
 
 **Q: Can I use a different Certificate?**
 A: Yes! Run with the `--cert-url` flag:
+
 ```bash
 python main.py --cert-url "https://coursera.org/professional-certificates/your-cert"
 ```

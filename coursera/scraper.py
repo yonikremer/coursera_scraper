@@ -3,7 +3,7 @@ import requests
 import warnings
 import shutil
 from pathlib import Path
-from typing import Set, Tuple, List
+from typing import Set, Tuple, List, Callable, Optional
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions
@@ -32,10 +32,12 @@ class CourseraScraper:
         email: str,
         download_dir: str = "coursera_downloads",
         headless: bool = False,
+        on_content_downloaded: Optional[Callable[[Path, str], None]] = None,
     ):
         self.email = email
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(exist_ok=True)
+        self.on_content_downloaded = on_content_downloaded
 
         # Global shared assets for all courses.
         self.shared_assets_dir = self.download_dir / "shared_assets"
@@ -258,16 +260,22 @@ class CourseraScraper:
 
         # Process based on item type
         if item_type == "video":
-            downloaded_something, count = self.video_extractor.process(
+            downloaded_something, count, new_files = self.video_extractor.process(
                 course_dir, module_dir, item_counter, title, item_url, self.browser
             )
             materials_downloaded += count
+            if self.on_content_downloaded:
+                for path, type_ in new_files:
+                    self.on_content_downloaded(path, type_)
 
         if item_type == "reading":
-            downloaded_something, count = self.reading_extractor.process(
+            downloaded_something, count, new_files = self.reading_extractor.process(
                 course_dir, module_dir, item_counter, title, downloaded_files
             )
             materials_downloaded += count
+            if self.on_content_downloaded:
+                for path, type_ in new_files:
+                    self.on_content_downloaded(path, type_)
 
         if item_type in ["quiz", "assignment"]:
             downloaded_something, count = self.quiz_extractor.process(

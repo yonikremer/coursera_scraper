@@ -297,6 +297,34 @@ def generate_content_updates(current_context: str, new_text: str, file_name: str
         return "", current_context
 
 
+def summarize_file(file_path: str, context: str = "") -> Tuple[bool, str]:
+    """
+    Summarizes a single HTML reading file.
+    Returns (True, new_context) if successful or if summary already exists (no-op success),
+    (False, context) otherwise.
+    """
+    if not os.path.exists(file_path):
+        return False, context
+        
+    if has_summary(file_path):
+        return True, context
+        
+    file_name = os.path.basename(file_path)
+    text = extract_text_from_html(file_path)
+    
+    # If None (interactive) or empty
+    if text is None or not text:
+        return False, context
+        
+    local_summary_html, new_context = generate_content_updates(context, text, file_name)
+    
+    if local_summary_html:
+        inject_summary_into_file(file_path, local_summary_html)
+        return True, new_context
+        
+    return False, context
+
+
 def process_course(course_name: str, files: List[str], pbar: tqdm):
     """
     Process all files for a specific course sequentially to maintain context.
@@ -340,7 +368,7 @@ def is_video(filename: str):
     return os.path.exists(filename.replace(".html", ".mp4"))
 
 
-def main():
+def summarize_all_readings(root_dir: str = "coursera_downloads"):
     # Register cleanup on Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
     
@@ -351,8 +379,8 @@ def main():
         stop_ollama_server()
         return
 
-    print(f"Scanning {ROOT_DIR} for reading materials...")
-    files = get_html_files(ROOT_DIR)
+    print(f"Scanning {root_dir} for reading materials...")
+    files = get_html_files(root_dir)
 
     if not files:
         print("No HTML files found.")
@@ -367,7 +395,7 @@ def main():
     for f in files_to_process:
         # Determine course name from directory structure
         # Assumes structure: coursera_downloads/course_name/...
-        rel_path = os.path.relpath(f, ROOT_DIR)
+        rel_path = os.path.relpath(f, root_dir)
         parts = rel_path.split(os.sep)
         if parts:
             course_name = parts[0]
@@ -396,4 +424,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    summarize_all_readings(ROOT_DIR)

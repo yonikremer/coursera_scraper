@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Set, Tuple, List
 import requests
 import urllib.parse
 import os
@@ -87,10 +87,11 @@ class ReadingExtractor:
         item_counter: int,
         title: str,
         downloaded_files: Set[str],
-    ) -> Tuple[bool, int]:
+    ) -> Tuple[bool, int, List[Tuple[Path, str]]]:
         """Process and save reading content and attachments."""
         downloaded_count = 0
         downloaded_something = False
+        new_files = []
 
         # Handle barriers (Honor Code etc) before waiting for content
         url_before_barriers = self.driver.current_url
@@ -369,9 +370,10 @@ class ReadingExtractor:
 
             downloaded_count += 1
             downloaded_something = True
+            new_files.append((html_file, "reading"))
             print(f"  Reading saved as HTML with assets")
 
-        return downloaded_something, downloaded_count
+        return downloaded_something, downloaded_count, new_files
 
     def _download_attachments(
         self,

@@ -1,7 +1,7 @@
 import time
 import re
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import (
@@ -191,8 +191,9 @@ class VideoExtractor:
 
     def _download_subtitles(
         self, item_counter: int, title: str, course_dir: Path, module_dir: Path
-    ):
+    ) -> list[Path]:
         """Find and download English subtitles."""
+        downloaded_paths = []
         try:
             # Look for track elements in the video tag
             tracks = self.driver.find_elements(
@@ -201,7 +202,7 @@ class VideoExtractor:
             )
 
             if not tracks:
-                return
+                return downloaded_paths
 
             print(f"  Found {len(tracks)} subtitle track(s).")
 
@@ -222,11 +223,15 @@ class VideoExtractor:
                     print(f"  ⬇ Downloading subtitles ({label})...")
                     if download_file(src, subtitle_file, self.session):
                         print(f"  ✓ Subtitles saved: {subtitle_file.name}")
+                        downloaded_paths.append(subtitle_file)
                         # Only download one English track
                         break
+            
+            return downloaded_paths
 
         except Exception as e:
             print(f"  ⚠ Error downloading subtitles: {e}")
+            return downloaded_paths
 
     def process(
         self,
@@ -236,10 +241,11 @@ class VideoExtractor:
         title: str,
         item_url: str,
         browser_manager: BrowserManager,
-    ) -> Tuple[bool, int]:
+    ) -> Tuple[bool, int, List[Tuple[Path, str]]]:
         """Process and download video items."""
         downloaded_count = 0
         downloaded_something = False
+        new_files = []
 
         # Try to remove messy elements before processing.
         try:
@@ -262,11 +268,13 @@ class VideoExtractor:
         main_video_file = get_or_move_path(course_dir, module_dir, main_filename)
 
         # Always try to download subtitles, even if video exists
-        self._download_subtitles(item_counter, title, course_dir, module_dir)
+        subs = self._download_subtitles(item_counter, title, course_dir, module_dir)
+        for sub in subs:
+            new_files.append((sub, "subtitle"))
 
         if main_video_file.exists() and main_video_file.stat().st_size > 0:
             print(f"  ℹ Video already exists: {main_video_file.name}")
-            return True, 1
+            return True, 1, new_files
 
         # 2. Strategy: Check the "Downloads" section buttons first (often the clearest source)
         download_buttons = []
@@ -302,7 +310,8 @@ class VideoExtractor:
                     print(f"  ⬇ Downloading from button...")
                     if download_file(best_href, main_video_file, self.session):
                         print(f"  ✓ Video saved: {main_video_file.name}")
-                        return True, 1
+                        new_files.append((main_video_file, "video"))
+                        return True, 1, new_files
 
         except (NoSuchElementException, StaleElementReferenceException) as e:
             print(f"  ⚠ Error checking download buttons: {e}")
@@ -320,7 +329,8 @@ class VideoExtractor:
                 print(f"  ✓ Found direct video source: {current_src[:60]}...")
                 if download_file(current_src, main_video_file, self.session):
                     print(f"  ✓ Video saved from direct source: {main_video_file.name}")
-                    return True, 1
+                    new_files.append((main_video_file, "video"))
+                    return True, 1, new_files
         except (NoSuchElementException, StaleElementReferenceException) as e:
             print(f"  ⚠ Error checking direct video source: {e}")
 
@@ -394,7 +404,8 @@ class VideoExtractor:
                     download_dir=self.download_dir,
                 ):
                     print(f"  ✓ Video saved with yt-dlp: {main_video_file.name}")
-                    return True, 1
+                    new_files.append((main_video_file, "video"))
+                    return True, 1, new_files
             except (yt_dlp.utils.DownloadError, OSError) as e:
                 print(f"  ⚠ yt-dlp manifest download failed: {e}")
 
@@ -412,7 +423,8 @@ class VideoExtractor:
                     download_dir=self.download_dir,
                 ):
                     print(f"  ✓ Video saved with yt-dlp: {main_video_file.name}")
-                    return True, 1
+                    new_files.append((main_video_file, "video"))
+                    return True, 1, new_files
             except (yt_dlp.utils.DownloadError, OSError) as e:
                 print(f"  ⚠ yt-dlp failed: {e}")
 
@@ -421,7 +433,8 @@ class VideoExtractor:
             print(f"  ⚠ Falling back to standard quality source (DOM)...")
             if download_file(best_dom_src, main_video_file, self.session):
                 print(f"  ✓ Video saved: {main_video_file.name}")
-                return True, 1
+                new_files.append((main_video_file, "video"))
+                return True, 1, new_files
 
         # 9. Final Fallback: Any download button
         try:
@@ -432,8 +445,9 @@ class VideoExtractor:
                         print(f"  ⚠ Falling back to download button (SD)...")
                         if download_file(href, main_video_file, self.session):
                             print(f"  ✓ Video saved: {main_video_file.name}")
-                            return True, 1
+                            new_files.append((main_video_file, "video"))
+                            return True, 1, new_files
         except WebDriverException as e:
             print(f"  ⚠ Error in fallback download: {e}")
 
-        return downloaded_something, downloaded_count
+        return downloaded_something, downloaded_count, new_files

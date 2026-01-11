@@ -120,24 +120,19 @@ async def process_vtt_file(file_path: str, client: httpx.AsyncClient, semaphore:
         pbar.update(1)
         return False
 
-async def main():
-    parser = argparse.ArgumentParser(description="Translate VTT files with parallel processing.")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
-    args = parser.parse_args()
-
-    all_vtt = get_vtt_files(ROOT_DIR)
+async def run_translation(root_dir: str, concurrency: int = DEFAULT_CONCURRENCY, limit: Optional[int] = None):
+    all_vtt = get_vtt_files(root_dir)
     files_to_process = [f for f in all_vtt if not os.path.exists(f.replace("_en.vtt", "_heb.vtt"))]
     
-    if args.limit:
-        files_to_process = files_to_process[:args.limit]
+    if limit:
+        files_to_process = files_to_process[:limit]
 
     if not files_to_process:
         print("Everything is up to date.")
         return
 
-    semaphore = asyncio.Semaphore(args.concurrency)
-    limits = httpx.Limits(max_keepalive_connections=args.concurrency, max_connections=args.concurrency)
+    semaphore = asyncio.Semaphore(concurrency)
+    limits = httpx.Limits(max_keepalive_connections=concurrency, max_connections=concurrency)
     
     async with httpx.AsyncClient(limits=limits) as client:
         with tqdm(total=len(files_to_process), desc="Translating Videos", unit="video") as pbar:
@@ -148,5 +143,13 @@ async def main():
 
     print("\nProcessing complete.")
 
+def translate_all_captions(root_dir: str, concurrency: int = DEFAULT_CONCURRENCY):
+    asyncio.run(run_translation(root_dir, concurrency))
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Translate VTT files with parallel processing.")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
+    args = parser.parse_args()
+
+    asyncio.run(run_translation(ROOT_DIR, args.concurrency, args.limit))
