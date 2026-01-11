@@ -297,8 +297,17 @@ class QuizExtractor:
             for b_text in barriers:
                 try:
                     xpath = f"//button[contains(., '{b_text}')] | //a[contains(., '{b_text}')] | //span[text()='{b_text}']/ancestor::button"
-                    btns = self.driver.find_elements(By.XPATH, xpath)
-                    for btn in btns:
+                    # Initial find to get count
+                    potential_btns = self.driver.find_elements(By.XPATH, xpath)
+                    count = len(potential_btns)
+
+                    for i in range(count):
+                        # Re-find elements to avoid StaleElementReferenceException if a previous click triggered a rollback
+                        current_btns = self.driver.find_elements(By.XPATH, xpath)
+                        if i >= len(current_btns):
+                            break
+
+                        btn = current_btns[i]
                         if btn.is_displayed() and btn.is_enabled():
                             if is_safe_to_click(btn):
                                 if "rc-InCourseSearchBar" in btn.get_attribute(
@@ -306,10 +315,12 @@ class QuizExtractor:
                                 ):
                                     continue
 
+                                # If validation fails (rollback), loop continues to i+1
                                 if click_and_validate(btn, f"barrier: '{b_text}'"):
                                     clicked_any = True
                                     found_in_round = True
-                                break
+                                    break
+
                     if found_in_round:
                         break
                 except Exception:
@@ -322,7 +333,17 @@ class QuizExtractor:
                         actions = self.driver.find_elements(
                             By.XPATH, "//button[contains(., 'Continue')]"
                         )
-                        for btn in actions:
+                        count = len(actions)
+
+                        for i in range(count):
+                            # Re-find elements
+                            current_actions = self.driver.find_elements(
+                                By.XPATH, "//button[contains(., 'Continue')]"
+                            )
+                            if i >= len(current_actions):
+                                break
+
+                            btn = current_actions[i]
                             if (
                                 btn.is_displayed()
                                 and btn.is_enabled()
@@ -340,7 +361,7 @@ class QuizExtractor:
                                     if click_and_validate(btn, "'Continue'"):
                                         clicked_any = True
                                         found_in_round = True
-                                    break
+                                        break
                     except Exception:
                         pass
 
@@ -361,15 +382,29 @@ class QuizExtractor:
                 ]
                 for btn_text in button_texts:
                     xpath = f"//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{btn_text.lower()}')] | //a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{btn_text.lower()}')]"
-                    buttons = self.driver.find_elements(By.XPATH, xpath)
-                    for btn in buttons:
-                        if btn.is_displayed() and btn.is_enabled():
-                            if is_safe_to_click(btn):
-                                btn_label = btn.text.strip() or btn_text
-                                if click_and_validate(btn, f"start: '{btn_label}'"):
-                                    clicked_any = True
-                                    found_in_round = True
+
+                    try:
+                        potential_btns = self.driver.find_elements(By.XPATH, xpath)
+                        count = len(potential_btns)
+
+                        for i in range(count):
+                            # Re-find to handle stale elements after rollback
+                            current_btns = self.driver.find_elements(By.XPATH, xpath)
+                            if i >= len(current_btns):
                                 break
+
+                            btn = current_btns[i]
+                            if btn.is_displayed() and btn.is_enabled():
+                                if is_safe_to_click(btn):
+                                    btn_label = btn.text.strip() or btn_text
+
+                                    if click_and_validate(btn, f"start: '{btn_label}'"):
+                                        clicked_any = True
+                                        found_in_round = True
+                                        break
+                    except Exception:
+                        pass
+
                     if found_in_round:
                         break
 
