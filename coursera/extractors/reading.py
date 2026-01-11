@@ -53,7 +53,7 @@ class ReadingExtractor:
             pass
 
         barriers = ["Continue", "I agree", "Agree", "Accept", "Confirm", "I understand"]
-        for round in range(2):
+        for _ in range(2):
             clicked = False
             for b_text in barriers:
                 try:
@@ -109,9 +109,8 @@ class ReadingExtractor:
 
         # Wait for reading content to load
         from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.common.exceptions import TimeoutException
 
-        print(f"  Waiting for reading content...")
+        print("  Waiting for reading content...")
         reading_selectors = ["div[class*='rc-CML']", "div.content", "article", "main"]
         WebDriverWait(self.driver, 20).until(
             lambda d: any(
@@ -125,7 +124,8 @@ class ReadingExtractor:
         selector_used = None
 
         # Remove messy elements before extraction.
-        self.driver.execute_script("""
+        self.driver.execute_script(
+            """
             const messySelectors = [
                 '[data-ai-instructions="true"]',
                 '[data-testid="content-integrity-instructions"]',
@@ -145,7 +145,8 @@ class ReadingExtractor:
                     }
                 });
             });
-        """)
+        """
+        )
 
         for selector in reading_selectors + ["div[role='main']"]:
             try:
@@ -297,9 +298,9 @@ class ReadingExtractor:
                 if matched_file_name:
                     # Wrap the asset div in a link to make it clickable
                     new_a = soup.new_tag("a", href=matched_file_name, target="_self")
-                    new_a["style"] = (
-                        "text-decoration: none; color: inherit; cursor: pointer; display: block;"
-                    )
+                    new_a[
+                        "style"
+                    ] = "text-decoration: none; color: inherit; cursor: pointer; display: block;"
                     asset_div.wrap(new_a)
                     # Also update data-url to local just in case
                     asset_div["data-url"] = matched_file_name
@@ -312,7 +313,8 @@ class ReadingExtractor:
             filename = f"{item_counter:03d}_{title}.html"
             html_file = get_or_move_path(course_dir, module_dir, filename)
             with open(html_file, "w", encoding="utf-8") as f:
-                f.write(f"""<!DOCTYPE html>
+                f.write(
+                    f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
@@ -366,7 +368,8 @@ class ReadingExtractor:
         </div>
     </div>
 </body>
-</html>""")
+</html>"""
+                )
 
             downloaded_count += 1
             downloaded_something = True

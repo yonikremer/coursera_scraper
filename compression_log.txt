@@ -1,6 +1,0 @@
-2026-01-11 22:52:37,306 - INFO - Compressed 001_welcome_to_the_google_advanced_data_analytics_certificate.mp4: 240.1MB -> 22.8MB (-90.5%) in 119.1s
-2026-01-11 22:53:01,263 - INFO - Compressed 004_introduction_to_course_1.mp4: 10.4MB -> 5.4MB (-48.0%) in 24.0s
-2026-01-11 22:53:46,704 - INFO - Compressed 005_get_started_with_your_google_advanced_data_analytics_certificate.mp4: 53.5MB -> 10.3MB (-80.7%) in 45.4s
-2026-01-11 22:54:17,712 - INFO - Compressed 008_welcome_to_module_1.mp4: 17.2MB -> 8.3MB (-51.6%) in 31.0s
-2026-01-11 22:55:00,884 - INFO - Compressed 010_explore_your_data_toolbox.mp4: 19.2MB -> 9.5MB (-50.4%) in 43.2s
-2026-01-11 22:55:08,125 - INFO - Compressed 014_wrap_up.mp4: 2.3MB -> 1.4MB (-39.5%) in 7.2s

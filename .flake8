@@ -1,0 +1,23 @@
+[flake8]
+max-line-length = 127
+extend-ignore = E203, W503
+exclude = 
+    .git,
+    __pycache__,
+    venv,
+    build,
+    dist,
+    coursera_downloads
+per-file-ignores =
+    coursera/extractors/quiz.py:E501,W291,W293,B007
+    coursera/extractors/lab.py:E501,W291,W293,B007,F541,F841,B001,E722,B014,F401
+    coursera/extractors/reading.py:E501,W291,W293,F541
+    coursera/extractors/video.py:E501
+    coursera/extractors/common.py:F541,B007
+    coursera/scraper.py:E501,B028
+    coursera/files.py:E501
+    coursera/browser.py:F401
+    create_course_navigator.py:E501,W291,W293
+    apply_subtitles.py:B007
+    compress_all_videos_gpu.py:B007
+

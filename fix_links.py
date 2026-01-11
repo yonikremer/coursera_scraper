@@ -1,20 +1,21 @@
 import os
-import re
+
 import urllib.parse
 from pathlib import Path
 from bs4 import BeautifulSoup
 from coursera.utils import sanitize_filename
 
+
 def fix_attachment_links(root_dir):
     """
-    Scans HTML files in root_dir and replaces external attachment links 
+    Scans HTML files in root_dir and replaces external attachment links
     with relative links to local files.
     """
     root_path = Path(root_dir)
     html_files = list(root_path.rglob("*.html"))
-    
+
     print(f"Found {len(html_files)} HTML files to process.")
-    
+
     links_fixed = 0
     files_changed = 0
 
@@ -22,38 +23,40 @@ def fix_attachment_links(root_dir):
         # We look for files in the same directory that look like attachments
         # Pattern: XXX_attachment_filename.ext
         parent_dir = html_file.parent
-        local_files = [f for f in parent_dir.iterdir() if f.is_file() and "_attachment_" in f.name]
-        
+        local_files = [
+            f for f in parent_dir.iterdir() if f.is_file() and "_attachment_" in f.name
+        ]
+
         if not local_files:
             continue
 
         try:
-            with open(html_file, 'r', encoding='utf-8') as f:
+            with open(html_file, "r", encoding="utf-8") as f:
                 content = f.read()
-            
-            soup = BeautifulSoup(content, 'html.parser')
+
+            soup = BeautifulSoup(content, "html.parser")
             modified = False
-            
+
             # Find all links that look like downloads
-            for a_tag in soup.find_all('a', href=True):
-                href = a_tag['href']
-                
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag["href"]
+
                 # Skip already local links or empty ones
-                if not href or not href.startswith(('http://', 'https://')):
+                if not href or not href.startswith(("http://", "https://")):
                     continue
-                
+
                 # Logic to find matching local file
                 matched_file = None
-                
+
                 # Check data-name on <a> tag
-                data_name = a_tag.get('data-name')
-                
+                data_name = a_tag.get("data-name")
+
                 # Check data-name on children (e.g. div inside a)
                 if not data_name:
                     child_with_data = a_tag.find(attrs={"data-name": True})
                     if child_with_data:
-                        data_name = child_with_data.get('data-name')
-                
+                        data_name = child_with_data.get("data-name")
+
                 if data_name:
                     clean_name = sanitize_filename(data_name)
                     # The local file should contain this clean name
@@ -61,7 +64,7 @@ def fix_attachment_links(root_dir):
                         if f"_attachment_{clean_name}" in lf.name:
                             matched_file = lf
                             break
-                
+
                 # Strategy B: Check filename in URL (fallback)
                 if not matched_file:
                     try:
@@ -71,12 +74,15 @@ def fix_attachment_links(root_dir):
                         if url_filename:
                             url_filename = urllib.parse.unquote(url_filename)
                             clean_url_name = sanitize_filename(url_filename)
-                            
+
                             for lf in local_files:
                                 if clean_url_name in lf.name:
                                     matched_file = lf
                                     break
-                                if Path(clean_url_name).stem in lf.stem and lf.suffix == Path(clean_url_name).suffix:
+                                if (
+                                    Path(clean_url_name).stem in lf.stem
+                                    and lf.suffix == Path(clean_url_name).suffix
+                                ):
                                     matched_file = lf
                                     break
                     except Exception:
@@ -84,30 +90,34 @@ def fix_attachment_links(root_dir):
 
                 if matched_file:
                     new_href = matched_file.name
-                    a_tag['href'] = new_href
-                    a_tag['target'] = "_self"
-                    if 'rel' in a_tag.attrs: del a_tag.attrs['rel']
-                    
-                    print(f"  [FIX] {html_file.name}: Link to '{href[:30]}...' -> '{new_href}'")
+                    a_tag["href"] = new_href
+                    a_tag["target"] = "_self"
+                    if "rel" in a_tag.attrs:
+                        del a_tag.attrs["rel"]
+
+                    print(
+                        f"  [FIX] {html_file.name}: Link to "
+                        f"'{href[:30]}...' -> '{new_href}'"
+                    )
                     modified = True
                     links_fixed += 1
 
             # Find div assets (CML assets)
-            for asset_div in soup.find_all('div', attrs={"data-url": True}):
-                href = asset_div['data-url']
-                if not href or not href.startswith(('http://', 'https://')):
+            for asset_div in soup.find_all("div", attrs={"data-url": True}):
+                href = asset_div["data-url"]
+                if not href or not href.startswith(("http://", "https://")):
                     continue
-                
-                data_name = asset_div.get('data-name')
+
+                data_name = asset_div.get("data-name")
                 matched_file = None
-                
+
                 if data_name:
                     clean_name = sanitize_filename(data_name)
                     for lf in local_files:
                         if f"_attachment_{clean_name}" in lf.name:
                             matched_file = lf
                             break
-                
+
                 if not matched_file:
                     try:
                         parsed_url = urllib.parse.urlparse(href)
@@ -116,26 +126,36 @@ def fix_attachment_links(root_dir):
                             url_filename = urllib.parse.unquote(url_filename)
                             clean_url_name = sanitize_filename(url_filename)
                             for lf in local_files:
-                                if clean_url_name in lf.name or (Path(clean_url_name).stem in lf.stem and lf.suffix == Path(clean_url_name).suffix):
+                                if clean_url_name in lf.name or (
+                                    Path(clean_url_name).stem in lf.stem
+                                    and lf.suffix == Path(clean_url_name).suffix
+                                ):
                                     matched_file = lf
                                     break
-                    except Exception: pass
+                    except Exception:
+                        pass
 
                 if matched_file:
                     new_href = matched_file.name
                     # Wrap the asset div in a link if it's not already inside one
-                    if not asset_div.find_parent('a'):
-                        new_a = soup.new_tag('a', href=new_href, target="_self")
-                        new_a['style'] = "text-decoration: none; color: inherit; cursor: pointer; display: block;"
+                    if not asset_div.find_parent("a"):
+                        new_a = soup.new_tag("a", href=new_href, target="_self")
+                        new_a["style"] = (
+                            "text-decoration: none; color: inherit; "
+                            "cursor: pointer; display: block;"
+                        )
                         asset_div.wrap(new_a)
-                    
-                    asset_div['data-url'] = new_href
-                    print(f"  [FIX] {html_file.name}: Div Asset '{data_name}' -> '{new_href}'")
+
+                    asset_div["data-url"] = new_href
+                    print(
+                        f"  [FIX] {html_file.name}: Div Asset "
+                        f"'{data_name}' -> '{new_href}'"
+                    )
                     modified = True
                     links_fixed += 1
 
             if modified:
-                with open(html_file, 'w', encoding='utf-8') as f:
+                with open(html_file, "w", encoding="utf-8") as f:
                     f.write(str(soup))
                 files_changed += 1
 
@@ -143,6 +163,7 @@ def fix_attachment_links(root_dir):
             print(f"Error processing {html_file}: {e}")
 
     print(f"\nSummary: Fixed {links_fixed} links in {files_changed} files.")
+
 
 if __name__ == "__main__":
     download_dir = "coursera_downloads"

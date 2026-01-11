@@ -50,9 +50,9 @@ class LabExtractor:
                 # Add variations for matching
                 final_replacements[old_name] = new_rel_path
                 # Add variation with backslashes for JSON/Windows context
-                final_replacements[old_name.replace("/", "\\\\")] = (
-                    new_rel_path.replace("/", "\\\\")
-                )
+                final_replacements[
+                    old_name.replace("/", "\\\\")
+                ] = new_rel_path.replace("/", "\\\\")
 
             updated = False
             for cell in notebook_content.get("cells", []):
@@ -410,7 +410,7 @@ class LabExtractor:
         original_window = None
         lab_window = None
 
-        print(f"  Processing lab...")
+        print("  Processing lab...")
 
         # 1. Determine target directory name using slug (for consistency with find_items)
         slug = extract_slug(item_url)
@@ -452,7 +452,8 @@ class LabExtractor:
 
         # Try to remove messy elements before launching.
         try:
-            self.driver.execute_script("""
+            self.driver.execute_script(
+                """
                 const messySelectors = [
                     '[data-ai-instructions="true"]',
                     '[data-testid="content-integrity-instructions"]',
@@ -466,7 +467,8 @@ class LabExtractor:
                 messySelectors.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
                 });
-            """)
+            """
+            )
         except:
             pass
 
@@ -573,10 +575,8 @@ class LabExtractor:
             downloaded_files_in_lab.extend(files_downloaded_via_selection_paths)
             downloaded_something = True
 
-        zip_downloaded = False
-        if not files_downloaded_via_selection_paths:  # Only try zip if selection failed
             # Fallback: Download all files button
-            print(f"  Looking for 'Download all files' button (Fallback)...")
+            print("  Looking for 'Download all files' button (Fallback)...")
             download_all_btn = None
             for btn_selector in [
                 "//button[contains(., 'Download all files')]",
@@ -785,9 +785,9 @@ class LabExtractor:
             downloaded_something = True
 
         if downloaded_something:
-            print(f"  Lab processing complete")
+            print("  Lab processing complete")
         else:
-            print(f"  No files downloaded for this lab.")
+            print("  No files downloaded for this lab.")
 
         # Clean up: close the lab tab and switch back to the original window.
         if lab_window and original_window:

@@ -3,6 +3,7 @@ import shutil
 
 ROOT_DIR = "coursera_downloads"
 
+
 def apply_subtitles():
     """
     Scans for *_heb.vtt files and creates a copy named *.vtt (matching the video filename).
@@ -16,13 +17,13 @@ def apply_subtitles():
             if file.endswith("_heb.vtt"):
                 # Source: video_name_heb.vtt
                 source_path = os.path.join(root, file)
-                
+
                 # Target: video_name.vtt
                 # We assume the format ends in _heb.vtt, so we strip that suffix
                 base_name = file.replace("_heb.vtt", "")
                 target_filename = f"{base_name}.vtt"
                 target_path = os.path.join(root, target_filename)
-                
+
                 # Verify that a corresponding video file actually exists
                 # (Common extensions: .mp4, .mkv, .webm)
                 video_exists = False
@@ -31,7 +32,7 @@ def apply_subtitles():
                     if os.path.exists(video_path):
                         video_exists = True
                         break
-                
+
                 if not video_exists:
                     # It might be that the video name is slightly different or the _heb logic is off
                     # Let's try to verify against the _en.vtt if video not found
@@ -53,6 +54,7 @@ def apply_subtitles():
 
     print(f"\nSuccess! Applied subtitles to {count} videos.")
     print("These videos will now play with Hebrew subtitles automatically.")
+
 
 if __name__ == "__main__":
     apply_subtitles()

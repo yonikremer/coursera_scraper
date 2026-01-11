@@ -394,7 +394,10 @@ def create_lab_html(lab_dir_path, html_path, course_tree):
 
             link = f"http://localhost:8888/lab/tree/{url_path}"
 
-            lab_content += f'<li><a href="{link}" target="_blank">Open {nb.name} in Jupyter Lab</a></li>'
+            lab_content += (
+                f'<li><a href="{link}" target="_blank">'
+                f"Open {nb.name} in Jupyter Lab</a></li>"
+            )
 
     lab_content += "</ul></div>"
 
@@ -465,7 +468,8 @@ def generate_course_navigation(course_dir: Path):
             # Filter out _view.html from candidates
             html_file = [h for h in html_file if not h.name.endswith("_view.html")]
 
-            # Check for lab directory if current item isn't it (though we are iterating all items)
+            # Check for lab directory if current item isn't it
+            # (though we are iterating all items)
             # Actually, if 'f' is a directory and matches prefix, it IS the lab.
             # But we might have processed it already if we hit a file with same prefix first?
             # Sorted order usually puts files before directories or similar?
@@ -478,7 +482,8 @@ def generate_course_navigation(course_dir: Path):
                 lab_html_name = f.name + ".html"
                 # We want the HTML to be in the module dir, outside the lab dir?
                 # Or we can put it inside? The request implies "pages for the labs".
-                # Let's put the generated HTML in the module directory, named after the lab directory.
+                # Let's put the generated HTML in the module directory,
+                # named after the lab directory.
                 nav_path = module_dir / lab_html_name
 
                 item = {

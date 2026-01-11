@@ -38,3 +38,7 @@ ENV/
 # Temp files
 cookies.txt
 *.tmp
+
+# Logs
+*.log
+*_log.txt

@@ -24,7 +24,11 @@ def compress_video_gpu(input_path):
     # -cq 32: Increased from 28 to target smaller file sizes.
     # -rc vbr: Variable Bit Rate.
     # -preset p6: Start with p6.
-    ffmpeg_path = r"C:\Users\yonik\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin\ffmpeg.exe"
+    ffmpeg_path = (
+        r"C:\Users\yonik\AppData\Local\Microsoft\WinGet\Packages"
+        r"\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build"
+        r"\bin\ffmpeg.exe"
+    )
     cmd = [
         ffmpeg_path,
         "-i",
@@ -60,12 +64,17 @@ def compress_video_gpu(input_path):
                 os.rename(temp_output, input_path)
                 reduction = (1 - new_size / orig_size) * 100
                 logging.info(
-                    f"GPU Compressed {basename}: {orig_size / 1024 / 1024:.1f}MB -> {new_size / 1024 / 1024:.1f}MB (-{reduction:.1f}%) in {duration:.1f}s"
+                    f"GPU Compressed {basename}: "
+                    f"{orig_size / 1024 / 1024:.1f}MB -> "
+                    f"{new_size / 1024 / 1024:.1f}MB "
+                    f"(-{reduction:.1f}%) in {duration:.1f}s"
                 )
                 return True
             else:
                 logging.info(
-                    f"Skipped {basename}: Compressed size ({new_size / 1024 / 1024:.1f}MB) >= Original ({orig_size / 1024 / 1024:.1f}MB)"
+                    f"Skipped {basename}: Compressed size "
+                    f"({new_size / 1024 / 1024:.1f}MB) >= Original "
+                    f"({orig_size / 1024 / 1024:.1f}MB)"
                 )
                 os.remove(temp_output)
                 return False
@@ -104,7 +113,7 @@ def batch_compress_gpu(root_dir):
             success_count += 1
 
     total_time = time.time() - start_total
-    print(f"\nGPU Batch processing complete.")
+    print("\nGPU Batch processing complete.")
     print(f"Successfully compressed {success_count}/{total_videos} videos.")
     print(f"Total time: {total_time / 60:.1f} minutes")
 

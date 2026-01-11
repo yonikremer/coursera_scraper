@@ -1,7 +1,7 @@
 import time
 import requests
 import warnings
-import shutil
+
 from pathlib import Path
 from typing import Set, Tuple, List, Callable, Optional
 from selenium.webdriver.common.by import By
@@ -16,7 +16,7 @@ from selenium.common.exceptions import (
 from .auth import Authenticator
 from .browser import BrowserManager
 from .files import cleanup_stale_modules, find_items, get_or_move_path
-from .utils import extract_slug, sanitize_filename
+from .utils import sanitize_filename
 from .extractors.common import AssetManager, extract_pdfs
 from .extractors.video import VideoExtractor
 from .extractors.reading import ReadingExtractor
@@ -301,7 +301,7 @@ class CourseraScraper:
         materials_downloaded += pdf_count
 
         if not downloaded_something and item_type not in ["quiz", "assignment", "lab"]:
-            print(f"  ℹ No downloadable materials found")
+            print("  ℹ No downloadable materials found")
 
         return materials_downloaded
 
@@ -358,7 +358,7 @@ class CourseraScraper:
                 if not has_content:
                     print(f"✓ No more modules found (attempted module {module_num})")
                     print(f"  Current URL: {self.driver.current_url}")
-                    print(f"  Continuing to next course...")
+                    print("  Continuing to next course...")
                     return 0, 0
             else:
                 print(f"  ✓ Found content at week/{module_num}")

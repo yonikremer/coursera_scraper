@@ -14,12 +14,19 @@ from coursera.scraper import CourseraScraper
 from create_playlists import process_all_courses
 from create_course_navigator import scan_and_generate
 from compress_all_videos_gpu import batch_compress_gpu, compress_video_gpu
-from summarize_readings import summarize_all_readings, summarize_file, start_ollama_server, stop_ollama_server
+from summarize_readings import (
+    summarize_all_readings,
+    summarize_file,
+    start_ollama_server,
+    stop_ollama_server,
+)
 from translate_captions import translate_all_captions, process_vtt_file
+
 
 class DummyPbar:
     def update(self, n):
         pass
+
 
 def gpu_worker(job_queue: queue.Queue, stop_event: threading.Event):
     """Worker thread for GPU video compression."""
@@ -28,16 +35,17 @@ def gpu_worker(job_queue: queue.Queue, stop_event: threading.Event):
         try:
             item = job_queue.get(timeout=1)
             file_path, type_ = item
-            
+
             if type_ == "video":
                 # print(f"  [GPU Worker] Compressing {file_path.name}...")
                 compress_video_gpu(str(file_path))
-            
+
             job_queue.task_done()
         except queue.Empty:
             continue
         except Exception as e:
             print(f"  [GPU Worker] Error: {e}")
+
 
 async def ai_worker_async(job_queue: queue.Queue, stop_event: threading.Event):
     """Async worker logic for AI tasks."""
@@ -46,10 +54,10 @@ async def ai_worker_async(job_queue: queue.Queue, stop_event: threading.Event):
         return
 
     print("  [AI Worker] Started/Connected to Ollama.")
-    
+
     # Serialize AI tasks to avoid VRAM overload or conflicts
-    semaphore = asyncio.Semaphore(1) 
-    
+    semaphore = asyncio.Semaphore(1)
+
     # Fake progress bar for process_vtt_file
     dummy_pbar = DummyPbar()
 
@@ -64,56 +72,70 @@ async def ai_worker_async(job_queue: queue.Queue, stop_event: threading.Event):
                     continue
 
                 file_path, type_ = item
-                
+
                 if type_ == "subtitle":
                     # print(f"  [AI Worker] Translating {file_path.name}...")
-                    await process_vtt_file(str(file_path), client, semaphore, dummy_pbar)
-                
+                    await process_vtt_file(
+                        str(file_path), client, semaphore, dummy_pbar
+                    )
+
                 elif type_ == "reading":
                     # print(f"  [AI Worker] Summarizing {file_path.name}...")
                     # summarize_file is synchronous, so we just call it.
-                    # Ideally we'd run in executor, but since we are serializing anyway, it's ok.
+                    # Ideally we'd run in executor, but since we are serializing anyway,
+                    # it's ok.
                     summarize_file(str(file_path))
-                
+
                 job_queue.task_done()
             except Exception as e:
                 print(f"  [AI Worker] Error: {e}")
+
 
 def ai_worker_runner(job_queue: queue.Queue, stop_event: threading.Event):
     """Thread entry point for AI worker."""
     asyncio.run(ai_worker_async(job_queue, stop_event))
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Download all materials from Coursera,\n"
-                    "integrated with parallel compression and AI post-processing."
+        "integrated with parallel compression and AI post-processing."
     )
     parser.add_argument(
         "--email",
         default="yoni.kremer@gmail.com",
-        help="Google account email (default: yoni.kremer@gmail.com)"
+        help="Google account email (default: yoni.kremer@gmail.com)",
     )
     parser.add_argument(
         "--cert-url",
-        default="https://www.coursera.org/professional-certificates/google-advanced-data-analytics",
-        help="Professional certificate URL"
+        default="https://www.coursera.org/professional-certificates/"
+        "google-advanced-data-analytics",
+        help="Professional certificate URL",
     )
     parser.add_argument(
         "--output-dir",
         default="coursera_downloads",
-        help="Output directory for downloads (default: coursera_downloads)"
+        help="Output directory for downloads (default: coursera_downloads)",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Run browser in headless mode (not recommended for login)"
+        help="Run browser in headless mode (not recommended for login)",
     )
-    
+
     # New flags for controlling steps
-    parser.add_argument("--skip-download", action="store_true", help="Skip the downloading phase")
-    parser.add_argument("--skip-compress", action="store_true", help="Skip video compression")
-    parser.add_argument("--skip-translate", action="store_true", help="Skip caption translation")
-    parser.add_argument("--skip-summary", action="store_true", help="Skip reading summarization")
+    parser.add_argument(
+        "--skip-download", action="store_true", help="Skip the downloading phase"
+    )
+    parser.add_argument(
+        "--skip-compress", action="store_true", help="Skip video compression"
+    )
+    parser.add_argument(
+        "--skip-translate", action="store_true", help="Skip caption translation"
+    )
+    parser.add_argument(
+        "--skip-summary", action="store_true", help="Skip reading summarization"
+    )
 
     args = parser.parse_args()
 
@@ -132,18 +154,25 @@ def main():
 
     # 1. Download Phase
     if not args.skip_download:
-        
         # Start Workers if not skipping their respective tasks
         if not args.skip_compress:
-            t_gpu = threading.Thread(target=gpu_worker, args=(post_process_queue, stop_workers_event), daemon=True)
+            t_gpu = threading.Thread(
+                target=gpu_worker,
+                args=(post_process_queue, stop_workers_event),
+                daemon=True,
+            )
             t_gpu.start()
             workers.append(t_gpu)
 
         if not args.skip_translate and not args.skip_summary:
-            t_ai = threading.Thread(target=ai_worker_runner, args=(post_process_queue, stop_workers_event), daemon=True)
+            t_ai = threading.Thread(
+                target=ai_worker_runner,
+                args=(post_process_queue, stop_workers_event),
+                daemon=True,
+            )
             t_ai.start()
             workers.append(t_ai)
-        
+
         def on_content(path, type_):
             # Callback to add items to queue
             # Filter based on args
@@ -159,25 +188,25 @@ def main():
             email=args.email,
             download_dir=args.output_dir,
             headless=args.headless,
-            on_content_downloaded=on_content
+            on_content_downloaded=on_content,
         )
-        
+
         try:
             scraper.download_certificate(cert_url=args.cert_url)
         except Exception as e:
             print(f"\nDownload phase error: {e}")
         finally:
-             # Stop workers
+            # Stop workers
             print("\nStopping workers and waiting for queue to empty...")
             stop_workers_event.set()
             for w in workers:
                 w.join()
-            
-            # Stop Ollama if we started it here (though script manages its own, 
-            # ai_worker logic might leave it running if process was shared, 
+
+            # Stop Ollama if we started it here (though script manages its own,
+            # ai_worker logic might leave it running if process was shared,
             # but stop_ollama_server() kills the global process variable).
             stop_ollama_server()
-            
+
     else:
         print("\nSkipping Download Phase.")
 
@@ -187,8 +216,8 @@ def main():
         return
 
     # 2-4. Sequential / Clean-up Passes
-    # These verify everything is done or process anything showing up from skip_download=True
-    # They automatically skip already processed files.
+    # These verify everything is done or process anything showing up from
+    # skip_download=True. They automatically skip already processed files.
 
     if not args.skip_compress:
         print("\n" + "-" * 60)

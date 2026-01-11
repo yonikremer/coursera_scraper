@@ -444,7 +444,8 @@ class QuizExtractor:
 
         # Try to remove any AI instructions if they are present before extracting.
         try:
-            self.driver.execute_script("""
+            self.driver.execute_script(
+                """
                 // Remove search bars that sometimes appear instead of content
                 const searchBars = document.querySelectorAll('[data-test="rc-InCourseSearchBar"]');
                 searchBars.forEach(el => {
@@ -472,7 +473,8 @@ class QuizExtractor:
                 messySelectors.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
                 });
-            """)
+            """
+            )
         except JavascriptException:
             pass  # Script failure is non-critical.
 
@@ -527,7 +529,8 @@ class QuizExtractor:
         display_title = title.replace("_", " ").title()
 
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html>
+            f.write(
+                f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
@@ -698,7 +701,8 @@ class QuizExtractor:
         </div>
     </div>
 </body>
-</html>""")
+</html>"""
+            )
 
     def _click_save_draft_button(self):
         """Try to click the 'Save draft' button if it exists."""

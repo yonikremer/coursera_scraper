@@ -226,7 +226,7 @@ class VideoExtractor:
                         downloaded_paths.append(subtitle_file)
                         # Only download one English track
                         break
-            
+
             return downloaded_paths
 
         except Exception as e:
@@ -249,7 +249,8 @@ class VideoExtractor:
 
         # Try to remove messy elements before processing.
         try:
-            self.driver.execute_script("""
+            self.driver.execute_script(
+                """
                 const messySelectors = [
                     '[data-ai-instructions="true"]',
                     '[data-testid="like-button"]',
@@ -259,8 +260,9 @@ class VideoExtractor:
                 messySelectors.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
                 });
-            """)
-        except:
+            """
+            )
+        except Exception:
             pass
 
         # 1. Determine the target filename for the main video
@@ -303,11 +305,11 @@ class VideoExtractor:
                         or "1080p" in href
                     ):
                         best_href = href
-                        print(f"  ✓ Found HD download link")
+                        print("  ✓ Found HD download link")
                         break
 
                 if best_href:
-                    print(f"  ⬇ Downloading from button...")
+                    print("  ⬇ Downloading from button...")
                     if download_file(best_href, main_video_file, self.session):
                         print(f"  ✓ Video saved: {main_video_file.name}")
                         new_files.append((main_video_file, "video"))
@@ -337,7 +339,7 @@ class VideoExtractor:
         # 4. Strategy: Check Network Logs for Manifest
         manifest_url = browser_manager.get_network_m3u8()
         if manifest_url:
-            print(f"  ✓ Found manifest URL in network logs")
+            print("  ✓ Found manifest URL in network logs")
 
         # 5. Strategy: Check for HLS/DASH Manifests in DOM (Fallback)
         best_dom_src = None
@@ -382,7 +384,7 @@ class VideoExtractor:
                         ]
                         if valid_matches:
                             manifest_url = valid_matches[0]
-                            print(f"  ✓ Found manifest URL in page source")
+                            print("  ✓ Found manifest URL in page source")
 
             except (
                 NoSuchElementException,
@@ -393,7 +395,7 @@ class VideoExtractor:
 
         # 6. Strategy: yt-dlp with Manifest (High Success for HD)
         if manifest_url:
-            print(f"  ⬇ Downloading from manifest with yt-dlp (Best Quality)...")
+            print("  ⬇ Downloading from manifest with yt-dlp (Best Quality)...")
             try:
                 # We need to pass cookies to yt-dlp
                 cookies = self.driver.get_cookies()
@@ -412,7 +414,7 @@ class VideoExtractor:
         # 7. Strategy: yt-dlp on Page URL (Retry, might work if extractor updated)
         # Skip this if we already tried the manifest, and it failed; it likely won't work either.
         if not manifest_url:
-            print(f"  ⬇ Trying high-quality download with yt-dlp (Page URL)...")
+            print("  ⬇ Trying high-quality download with yt-dlp (Page URL)...")
             try:
                 cookies = self.driver.get_cookies()
                 # Use --ignore-errors to prevent crash
@@ -430,7 +432,7 @@ class VideoExtractor:
 
         # 8. Fallback: Use the best available DOM source (likely 540p)
         if best_dom_src:
-            print(f"  ⚠ Falling back to standard quality source (DOM)...")
+            print("  ⚠ Falling back to standard quality source (DOM)...")
             if download_file(best_dom_src, main_video_file, self.session):
                 print(f"  ✓ Video saved: {main_video_file.name}")
                 new_files.append((main_video_file, "video"))
@@ -442,7 +444,7 @@ class VideoExtractor:
                 for btn in download_buttons:
                     href = btn.get_attribute("href")
                     if href:
-                        print(f"  ⚠ Falling back to download button (SD)...")
+                        print("  ⚠ Falling back to download button (SD)...")
                         if download_file(href, main_video_file, self.session):
                             print(f"  ✓ Video saved: {main_video_file.name}")
                             new_files.append((main_video_file, "video"))

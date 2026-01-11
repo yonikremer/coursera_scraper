@@ -1,7 +1,7 @@
 import shutil
-import time
+
 from pathlib import Path
-from typing import Set, List, Optional
+from typing import Set, List
 import requests
 import yt_dlp
 import yt_dlp.utils
