@@ -1,9 +1,13 @@
+"""
+Script to translate VTT subtitle files from English to Hebrew using Ollama.
+Supports parallel processing of lines within a file.
+"""
 import os
-import asyncio
-import argparse
-import httpx
 import re
-from typing import List, Optional
+import argparse
+import asyncio
+from typing import List, Optional, Tuple
+import httpx
 from tqdm.asyncio import tqdm
 
 # Configuration
@@ -15,6 +19,7 @@ DEFAULT_CONCURRENCY = 64  # Total parallel requests across all files
 
 
 def get_vtt_files(root_dir: str) -> List[str]:
+    """Recursively find all English VTT files."""
     vtt_files = []
     for root, _, files in os.walk(root_dir):
         for file in files:
@@ -24,10 +29,12 @@ def get_vtt_files(root_dir: str) -> List[str]:
 
 
 def is_timestamp(line: str) -> bool:
+    """Check if a line contains a VTT timestamp."""
     return "-->" in line and any(c.isdigit() for c in line)
 
 
 def is_metadata(line: str) -> bool:
+    """Check if a line is a VTT metadata line."""
     line = line.strip()
     if not line:
         return False
@@ -41,9 +48,7 @@ def is_metadata(line: str) -> bool:
 
 
 def clean_translation(text: str) -> str:
-    """
-    Strips markdown, JSON brackets, and extra quotes.
-    """
+    """Strips markdown, JSON brackets, and extra quotes from the translation."""
     text = text.strip()
     # Remove markdown code blocks
     text = re.sub(r"```(?:json|html|text)?\s*(.*?)\s*```", r"\1", text, flags=re.DOTALL)
@@ -60,6 +65,7 @@ def clean_translation(text: str) -> str:
 async def translate_line_async(
     client: httpx.AsyncClient, text: str, semaphore: asyncio.Semaphore
 ) -> Optional[str]:
+    """Translate a single line using the Ollama API."""
     prompt = f"Translate to Hebrew. Return ONLY the translation.\nText: {text}"
     payload = {
         "model": OLLAMA_MODEL,
@@ -79,14 +85,32 @@ async def translate_line_async(
                 cleaned = clean_translation(translated)
                 if cleaned:
                     return cleaned
-            except Exception:
+            except httpx.HTTPError:
                 await asyncio.sleep(0.5)
+            except (ValueError, KeyError) as e:
+                print(f"Error parsing response: {e}.")
+                break
     return None
+
+
+def _extract_translatable_lines(lines: List[str]) -> Tuple[List[int], List[str]]:
+    """Helper to extract indices and text of lines that need translation."""
+    indices = []
+    texts = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or is_metadata(stripped) or is_timestamp(stripped):
+            continue
+        if any(c.isalpha() for c in stripped):
+            indices.append(i)
+            texts.append(stripped)
+    return indices, texts
 
 
 async def process_vtt_file(
     file_path: str, client: httpx.AsyncClient, semaphore: asyncio.Semaphore, pbar: tqdm
-):
+) -> bool:
+    """Process a single VTT file: extract text, translate, and save results."""
     output_path = file_path.replace("_en.vtt", "_heb.vtt")
     if os.path.exists(output_path):
         pbar.update(1)
@@ -95,21 +119,12 @@ async def process_vtt_file(
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-    except Exception:
+    except OSError as e:
+        print(f"Failed to read {file_path}: {e}.")
         pbar.update(1)
         return False
 
-    text_indices = []
-    texts = []
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or is_metadata(stripped) or is_timestamp(stripped):
-            continue
-        if any(c.isalpha() for c in stripped):
-            text_indices.append(i)
-            texts.append(stripped)
-
+    indices, texts = _extract_translatable_lines(lines)
     if not texts:
         translated_texts = []
     else:
@@ -121,15 +136,17 @@ async def process_vtt_file(
             return False
 
     new_lines = list(lines)
-    for idx, translated in zip(text_indices, translated_texts):
-        new_lines[idx] = translated + "\n"
+    for idx, trans in zip(indices, translated_texts):
+        if trans is not None:
+            new_lines[idx] = trans + "\n"
 
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
         pbar.update(1)
         return True
-    except Exception:
+    except OSError as e:
+        print(f"Failed to write {output_path}: {e}.")
         pbar.update(1)
         return False
 
@@ -137,6 +154,7 @@ async def process_vtt_file(
 async def run_translation(
     root_dir: str, concurrency: int = DEFAULT_CONCURRENCY, limit: Optional[int] = None
 ):
+    """Orchestrate the translation of all VTT files in a directory."""
     all_vtt = get_vtt_files(root_dir)
     files_to_process = [
         f for f in all_vtt if not os.path.exists(f.replace("_en.vtt", "_heb.vtt"))
@@ -158,8 +176,6 @@ async def run_translation(
         with tqdm(
             total=len(files_to_process), desc="Translating Videos", unit="video"
         ) as pbar:
-            # We process files one by one to keep semaphore focused on line level
-            # while still providing a nice file-level progress bar.
             for file_path in files_to_process:
                 await process_vtt_file(file_path, client, semaphore, pbar)
 
@@ -167,15 +183,19 @@ async def run_translation(
 
 
 def translate_all_captions(root_dir: str, concurrency: int = DEFAULT_CONCURRENCY):
-    asyncio.run(run_translation(root_dir, concurrency))
+    """Synchronous wrapper to run the translation process."""
+    try:
+        asyncio.run(run_translation(root_dir, concurrency))
+    except (KeyboardInterrupt, SystemExit):
+        print("\nTranslation sequence interrupted.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
+    p = argparse.ArgumentParser(
         description="Translate VTT files with parallel processing."
     )
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
-    args = parser.parse_args()
-
-    asyncio.run(run_translation(ROOT_DIR, args.concurrency, args.limit))
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
+    p.add_argument("--dir", default=ROOT_DIR, help="Root directory to scan")
+    a = p.parse_args()
+    translate_all_captions(a.dir, a.concurrency)

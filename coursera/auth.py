@@ -1,7 +1,11 @@
+"""
+Authentication logic for Coursera using Selenium and persistent cookies.
+"""
 import time
 import pickle
-import requests
 from pathlib import Path
+
+import requests
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import (
@@ -12,6 +16,8 @@ from selenium.common.exceptions import (
 
 
 class Authenticator:
+    """Handles manual and persistent login to Coursera."""
+
     def __init__(
         self, driver, session: requests.Session, email: str, download_dir: Path
     ):
@@ -21,7 +27,7 @@ class Authenticator:
         self.cookies_file = download_dir / "coursera_cookies.pkl"
 
     def login_with_google(self):
-        """Login to Coursera using a Google account."""
+        """Login to Coursera using a Google account manually."""
         print(f"Logging in with Google account: {self.email}")
         print("\nOpening Coursera login page...")
         print(
@@ -41,10 +47,12 @@ class Authenticator:
 
         try:
             WebDriverWait(self.driver, 180).until(
-                lambda driver: (
-                    "coursera.org" in driver.current_url
-                    and "authMode=login" not in driver.current_url
-                    and "authMode=signup" not in driver.current_url
+                lambda d: (
+                    "coursera.org" in d.current_url
+                    and all(
+                        x not in d.current_url
+                        for x in ["authMode=login", "authMode=signup"]
+                    )
                 )
                 or self._check_logged_in()
             )
@@ -52,11 +60,8 @@ class Authenticator:
             time.sleep(3)
             print("  Login successful!")
 
-            # Save cookies for future sessions.
             self._save_cookies()
-
-            for cookie in self.driver.get_cookies():
-                self.session.cookies.set(cookie["name"], cookie["value"])
+            self._sync_session_cookies()
 
         except TimeoutException:
             print("\n⚠ Login timeout. Please try again and complete the login process.")
@@ -66,22 +71,23 @@ class Authenticator:
             raise
 
     def _check_logged_in(self) -> bool:
-        """Check if a user is logged in by looking for commonly authenticated elements."""
-        try:
-            self.driver.find_element(
-                By.XPATH, "//button[contains(@aria-label, 'Profile')]"
-            )
-            return True
-        except NoSuchElementException:
-            pass
-
-        try:
-            self.driver.find_element(By.XPATH, "//a[contains(@href, '/my-courses')]")
-            return True
-        except NoSuchElementException:
-            pass
-
+        """Check if a user is logged in by looking for authenticated elements."""
+        selectors = [
+            "//button[contains(@aria-label, 'Profile')]",
+            "//a[contains(@href, '/my-courses')]",
+        ]
+        for sel in selectors:
+            try:
+                if self.driver.find_element(By.XPATH, sel):
+                    return True
+            except NoSuchElementException:
+                continue
         return False
+
+    def _sync_session_cookies(self):
+        """Sync Selenium cookies to the requests Session."""
+        for cookie in self.driver.get_cookies():
+            self.session.cookies.set(cookie["name"], cookie["value"])
 
     def _save_cookies(self):
         """Save browser cookies to a file for persistent login."""
@@ -90,10 +96,8 @@ class Authenticator:
             with open(self.cookies_file, "wb") as f:
                 pickle.dump(cookies, f)
             print(f"  Cookies saved to {self.cookies_file}")
-        except (OSError, pickle.PickleError) as e:
-            print(f"⚠ Error saving cookies to file: {e}")
-        except WebDriverException as e:
-            print(f"⚠ Browser error while getting cookies: {e}")
+        except (OSError, pickle.PickleError, WebDriverException) as e:
+            print(f"⚠ Error saving cookies: {e}")
 
     def _load_cookies(self) -> bool:
         """Load cookies from a file and add them to the browser session."""
@@ -105,68 +109,49 @@ class Authenticator:
             with open(self.cookies_file, "rb") as f:
                 cookies = pickle.load(f)
 
-            # Navigate to Coursera first (required to set cookies for the domain).
             self.driver.get("https://www.coursera.org")
             time.sleep(2)
 
-            # Add each cookie to the browser.
             for cookie in cookies:
                 try:
-                    # Remove the domain if it starts with a dot (compatibility fix).
                     if "domain" in cookie and cookie["domain"].startswith("."):
                         cookie["domain"] = cookie["domain"][1:]
                     self.driver.add_cookie(cookie)
                 except WebDriverException:
-                    # Skip cookies that can't be added (e.g., invalid domain).
                     continue
 
             print("  Cookies loaded successfully")
             return True
-        except (OSError, pickle.PickleError) as e:
-            print(f"⚠ Error loading cookies from file: {e}")
-            return False
-        except WebDriverException as e:
-            print(f"⚠ Browser error while loading cookies: {e}")
+        except (OSError, pickle.PickleError, WebDriverException) as e:
+            print(f"⚠ Error loading cookies: {e}")
             return False
 
     def _verify_login(self) -> bool:
         """Verify if the current session is logged in."""
         try:
-            # Navigate to a protected page to check login status.
             self.driver.get("https://www.coursera.org/my-learning")
             time.sleep(3)
 
-            # Check if we're still on the my-learning page (logged in).
             if "my-learning" in self.driver.current_url or self._check_logged_in():
                 print("  Already logged in")
                 return True
-            else:
-                print("ℹ Not logged in (redirected or login elements not found)")
-                return False
+
+            print("ℹ Not logged in (redirected or login elements not found)")
+            return False
         except WebDriverException as e:
-            print(f"⚠ Browser error while verifying login: {e}")
+            print(f"⚠ Error verifying login: {e}")
             return False
 
     def login_with_persistence(self):
-        """
-        Attempt to log in using saved cookies, fall back to manual login if needed.
-        This allows users to stay logged in between script runs.
-        """
-        print(f"Attempting to login for: {self.email}")
+        """Attempt to log in using saved cookies, fall back to manual login if needed."""
+        print(f"Attempting login for: {self.email}")
 
-        # Try to load saved cookies first.
         if self._load_cookies():
-            # Sync cookies to the requests session.
-            for cookie in self.driver.get_cookies():
-                self.session.cookies.set(cookie["name"], cookie["value"])
-
-            # Verify the login is still valid.
+            self._sync_session_cookies()
             if self._verify_login():
-                # Login successful with saved cookies.
                 return
-            else:
-                print("\nℹ Saved cookies are expired or invalid")
-                print("  Proceeding with manual login...\n")
 
-        # if no saved cookies, or they expired - do manual login.
+            print("\nℹ Saved cookies are expired or invalid")
+            print("  Proceeding with manual login...\n")
+
         self.login_with_google()

@@ -1,0 +1,30 @@
+[MASTER]
+ignore=CVS,.git,.hg,.svn,test,tests,coursera_downloads,venv,env,.venv
+ignore-patterns=.*_log.txt,.*.log
+# Use multiple processes to speed up Pylint.
+jobs=1
+
+[MESSAGES CONTROL]
+# Enable all checks to identify and fix technical debt.
+disable=
+    line-too-long
+
+[DESIGN]
+max-branches=12
+max-statements=50
+max-returns=6
+max-nested-blocks=5
+max-locals=15
+max-args=5
+max-attributes=7
+
+
+# Note: line-too-long is disabled here because flake8 handles it (and we set it to 127 there).
+# If we wanted pylint to check it too, we'd set max-line-length below.
+
+[FORMAT]
+max-line-length=127
+
+[BASIC]
+# Allow shorter names like 'f', 'v', 'i'
+good-names=i,j,k,ex,Run,_,f,v,d

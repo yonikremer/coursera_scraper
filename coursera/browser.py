@@ -1,17 +1,22 @@
+"""
+Browser management using Selenium and Chrome.
+"""
 import json
 from pathlib import Path
+from typing import Optional
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions
-from selenium.webdriver.common.by import By
+from selenium.common.exceptions import WebDriverException
 
 
 class BrowserManager:
+    """Manages the Selenium WebDriver instance."""
+
     def __init__(self, download_dir: Path, headless: bool = False):
         self.download_dir = download_dir
         self.headless = headless
-        self.driver = None
+        self.driver: Optional[webdriver.Chrome] = None
 
     def setup_driver(self):
         """Initialize Selenium WebDriver with Chrome."""
@@ -31,21 +36,23 @@ class BrowserManager:
             "safebrowsing.enabled": True,
         }
         chrome_options.add_experimental_option("prefs", prefs)
-
-        # Enable performance logging to capture m3u8 URLs
         chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
+        # Use default service or specific path if needed.
         self.driver = webdriver.Chrome(options=chrome_options)
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
     def quit(self):
+        """Shutdown the browser."""
         if self.driver:
             self.driver.quit()
 
     def get_network_m3u8(self) -> str:
         """Extract m3u8 URL from browser network logs."""
+        if not self.driver:
+            return ""
         try:
             logs = self.driver.get_log("performance")
             for entry in logs:
@@ -63,6 +70,6 @@ class BrowserManager:
                         return url
                 except (json.JSONDecodeError, KeyError):
                     continue
-        except Exception as e:
+        except (WebDriverException, json.JSONDecodeError) as e:
             print(f"  ⚠ Error reading performance logs: {e}")
         return ""
